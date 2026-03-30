@@ -1,24 +1,22 @@
 {
-      "name": "swim-analyzer",
-        "version": "1.0.0",
-          "description": "AI-powered swim technique analyzer",
-            "main": "server.js",
-              "engines": {
-                  "node": ">=18.0.0"
-                    },
-                      "scripts": {
-                          "start": "node server.js",
-                              "build": "cd client && npm install && npm run build",
-                                  "dev": "concurrently \"node server.js\" \"cd client && npm run dev\""
-                                    },
-                                      "dependencies": {
-                                          "express": "^4.18.2",
-                                              "node-fetch": "^3.3.2",
-                                                  "dotenv": "^16.3.1"
-                                                    },
-                                                      "devDependencies": {
-                                                          "concurrently": "^8.2.1"
-                                                            }
-                                                            }
-                                                            
+  "name": "swim-analyzer",
+  "version": "1.0.0",
+  "description": "AI-powered swim technique analyzer",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "build": "cd client && npm install && npm run build",
+    "dev": "concurrently \"node server.js\" \"cd client && npm run dev\""
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.1"
+  }
 }

@@ -16,40 +16,39 @@ app.use(express.static(path.join(__dirname, "client/dist")));
 // ── Anthropic API proxy — key never exposed to browser ───────────────────────
 app.post("/api/messages", async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-        return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured on server." });
-          }
+  if (!apiKey) {
+    return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured on server." });
+  }
 
-            try {
-                const response = await fetch("https://api.anthropic.com/v1/messages", {
-                      method: "POST",
-                            headers: {
-                                    "Content-Type": "application/json",
-                                            "x-api-key": apiKey,
-                                                    "anthropic-version": "2023-06-01",
-                                                          },
-                                                                body: JSON.stringify(req.body),
-                                                                    });
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(req.body),
+    });
 
-                                                                        const data = await response.json();
+    const data = await response.json();
 
-                                                                            if (!response.ok) {
-                                                                                  return res.status(response.status).json(data);
-                                                                                      }
+    if (!response.ok) {
+      return res.status(response.status).json(data);
+    }
 
-                                                                                          res.json(data);
-                                                                                            } catch (err) {
-                                                                                                console.error("Proxy error:", err);
-                                                                                                    res.status(502).json({ error: "Failed to reach Anthropic API." });
-                                                                                                      }
-                                                                                                      });
+    res.json(data);
+  } catch (err) {
+    console.error("Proxy error:", err);
+    res.status(502).json({ error: "Failed to reach Anthropic API." });
+  }
+});
 
-                                                                                                      // ── Catch-all: serve React app for any unknown route ─────────────────────────
-                                                                                                      app.get("*", (req, res) => {
-                                                                                                        res.sendFile(path.join(__dirname, "client/dist/index.html"));
-                                                                                                        });
+// ── Catch-all: serve React app for any unknown route ─────────────────────────
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "client/dist/index.html"));
+});
 
-                                                                                                        app.listen(PORT, () => {
-                                                                                                          console.log(`Swim Analyzer running on port ${PORT}`);
-                                                                                                          });
-                                                                                                          
+app.listen(PORT, () => {
+  console.log(`Swim Analyzer running on port ${PORT}`);
+});
