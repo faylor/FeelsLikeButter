@@ -34,7 +34,11 @@ app.post("/api/messages", async (req, res) => {
     const data = await response.json();
 
     if (!response.ok) {
-      return res.status(response.status).json(data);
+      const payload = data?.error;
+      const message = typeof payload === "string"
+        ? payload
+        : payload?.message || JSON.stringify(payload) || "Anthropic API error.";
+      return res.status(response.status).json({ error: message });
     }
 
     res.json(data);

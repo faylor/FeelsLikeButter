@@ -28,7 +28,13 @@ Return ONLY valid JSON:
   });
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "API error");
+  if (!res.ok) {
+    const payload = data.error;
+    const message = typeof payload === "string"
+      ? payload
+      : payload?.message || JSON.stringify(payload) || "API error";
+    throw new Error(message);
+  }
 
   const text = data.content?.map((b) => b.text || "").join("") || "";
   return JSON.parse(text.replace(/```json|```/g, "").trim());
