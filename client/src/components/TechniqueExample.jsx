@@ -2,7 +2,7 @@ import { useState } from "react";
 import { T } from "../tokens.js";
 import { Label, Rule } from "./ui.jsx";
 
-// --- Claude call — returns structured comparison JSON -------------------------
+// --- Claude call -- returns structured comparison JSON -------------------------
 async function fetchExample(stroke, itemName, feedback) {
   const prompt = `You are an expert swimming coach. A club swimmer has been flagged for this technique issue:
 
@@ -10,7 +10,7 @@ Stroke: ${stroke}
 Item: ${itemName}
 Observed problem: ${feedback}
 
-Return ONLY valid JSON in this exact structure — no markdown, no preamble:
+Return ONLY valid JSON in this exact structure -- no markdown, no preamble:
 {
   "incorrectTitle": "<short label for the bad position, e.g. 'Head too high'>",
   "incorrectDesc": "<1 sentence describing the exact mistake and its effect>",
@@ -25,15 +25,15 @@ SVG guidelines:
 - viewBox="0 0 120 80", width/height not set (will be controlled by CSS)
 - fill="none", strokeWidth="2.5", strokeLinecap="round"
 - Draw a simple horizontal swimmer: circle for head (~r=7), line for torso, lines for arms and legs
-- Show the key difference clearly — e.g. for head position, draw head angle differently
-- Keep it minimal — 5 to 8 path/line/circle elements max
+- Show the key difference clearly -- e.g. for head position, draw head angle differently
+- Keep it minimal -- 5 to 8 path/line/circle elements max
 - No labels or text nodes inside the SVG`;
 
   const res = await fetch("/api/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 800,
       messages: [{ role: "user", content: prompt }],
     }),
@@ -56,7 +56,7 @@ export function TechniqueExample({ item, stroke, accent, onClose }) {
       const data = await fetchExample(stroke, item.name, item.feedback);
       setExample(data);
     } catch {
-      setError("Could not load example — please try again.");
+      setError("Could not load example -- please try again.");
     }
     setLoading(false);
   };
@@ -76,7 +76,7 @@ export function TechniqueExample({ item, stroke, accent, onClose }) {
         justifyContent: "center",
       }}>
 
-      {/* Sheet — stops click propagation so tapping inside doesn't close */}
+      {/* Sheet -- stops click propagation so tapping inside doesn't close */}
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -91,7 +91,7 @@ export function TechniqueExample({ item, stroke, accent, onClose }) {
         </div>
 
         <div style={{ padding: "0 24px 20px" }}>
-          <Label style={{ color: accent, marginBottom: 4 }}>{stroke} · Technique Example</Label>
+          <Label style={{ color: accent, marginBottom: 4 }}>{stroke} . Technique Example</Label>
           <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 18, fontWeight: 300, letterSpacing: "-0.02em", color: T.black, lineHeight: 1.3 }}>
             {item.name}
           </div>
@@ -102,7 +102,7 @@ export function TechniqueExample({ item, stroke, accent, onClose }) {
         {/* States */}
         {loading && (
           <div style={{ padding: "48px 24px", textAlign: "center" }}>
-            <Label style={{ display: "block", marginBottom: 8 }}>Generating example…</Label>
+            <Label style={{ display: "block", marginBottom: 8 }}>Generating example</Label>
             <div style={{ width: 32, height: 1, background: T.rule, margin: "0 auto" }} />
           </div>
         )}
@@ -111,7 +111,7 @@ export function TechniqueExample({ item, stroke, accent, onClose }) {
           <div style={{ margin: "20px 24px", padding: "12px 16px", background: "#FFF0F0", borderLeft: `3px solid ${T.red}` }}>
             <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.red }}>{error}</span>
             <button onClick={load} style={{ display: "block", marginTop: 8, background: "none", border: "none", color: accent, fontSize: 12, cursor: "pointer", padding: 0 }}>
-              Try again →
+              Try again 
             </button>
           </div>
         )}
@@ -124,7 +124,7 @@ export function TechniqueExample({ item, stroke, accent, onClose }) {
               {/* Incorrect */}
               <div style={{ border: `1px solid ${T.rule}`, borderTop: `3px solid ${T.red}` }}>
                 <div style={{ padding: "10px 12px 6px", background: "#FFF0F0" }}>
-                  <Label style={{ color: T.red, marginBottom: 2 }}>✗ Incorrect</Label>
+                  <Label style={{ color: T.red, marginBottom: 2 }}> Incorrect</Label>
                   <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, fontWeight: 600, color: T.dark }}>
                     {example.incorrectTitle}
                   </div>
@@ -143,7 +143,7 @@ export function TechniqueExample({ item, stroke, accent, onClose }) {
               {/* Correct */}
               <div style={{ border: `1px solid ${T.rule}`, borderTop: `3px solid #007A5E` }}>
                 <div style={{ padding: "10px 12px 6px", background: "#EBF7F4" }}>
-                  <Label style={{ color: "#007A5E", marginBottom: 2 }}>✓ Correct</Label>
+                  <Label style={{ color: "#007A5E", marginBottom: 2 }}> Correct</Label>
                   <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, fontWeight: 600, color: T.dark }}>
                     {example.correctTitle}
                   </div>
