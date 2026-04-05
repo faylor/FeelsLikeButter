@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { T } from "./tokens.js";
-import { STROKE_CHECKLISTS } from "./constants.js";
+import { STROKE_CHECKLISTS } from "./constants/strokes.js";
 import { loadSessions, saveSessions, loadProfile, saveProfile, loadPbs, savePbs } from "./lib/storage.js";
 import { extractFrames } from "./lib/video.js";
 import { analyzeWithClaude } from "./lib/api.js";
