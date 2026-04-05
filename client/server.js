@@ -29,11 +29,15 @@ app.post("/api/messages", async (req, res) => {
 // -- Swim England individual best times scraper --------------------------------
 // Uses Node 18 global fetch -- no import needed
 app.get("/api/swim-results", async (req, res) => {
+  // Log immediately on arrival -- before any try/catch
+  console.log(`[swim-results] request received, tiref="${req.query.tiref}", ip=${req.ip}`);
+
   // Safety net: always return JSON, never leak HTML errors
   try {
     const { tiref } = req.query;
 
     if (!tiref || !/^\d+$/.test(tiref)) {
+      console.log(`[swim-results] invalid tiref: "${tiref}"`);
       return res.status(400).json({ error: "Invalid tiref -- must be a number." });
     }
 
@@ -64,6 +68,17 @@ app.get("/api/swim-results", async (req, res) => {
 
     const html = await response.text();
     console.log(`[swim-results] got ${html.length} bytes`);
+
+    // Log ALL table ids/classes so we can identify the results table
+    const tableIds = [...html.matchAll(/<table[^>]*>/gi)].map(m =>
+      m[0].match(/id="([^"]+)"/)?.[1] || m[0].match(/class="([^"]+)"/)?.[1] || "no-id"
+    );
+    console.log(`[swim-results] tables found: ${JSON.stringify(tableIds)}`);
+
+    // Log 600 chars after the search form to see results area
+    const afterForm = html.indexOf("rankSelTableLarge");
+    const resultsArea = html.slice(afterForm + 500, afterForm + 1100).replace(/\s+/g, " ");
+    console.log(`[swim-results] after-form HTML: ${resultsArea}`);
 
     const parsed = parseSwimResults(html);
     console.log(`[swim-results] name="${parsed.name}", ${Object.keys(parsed.times).length} times`);
