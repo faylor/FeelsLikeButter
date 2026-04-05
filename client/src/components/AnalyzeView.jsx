@@ -5,6 +5,7 @@ import { PrivacyEditor } from "./PrivacyEditor.jsx";
 import { LaneSelector } from "./LaneSelector.jsx";
 import { TechniqueExample } from "./TechniqueExample.jsx";
 import { FrameReview } from "./FrameReview.jsx";
+import { VideoPreview } from "./VideoPreview.jsx";
 
 // --- Processing screen --------------------------------------------------------
 function ProcessingScreen({ progress }) {
@@ -221,7 +222,7 @@ function UploadStep({ stroke, videoFile, error, onStrokeChange, onFileChange, on
 }
 
 // --- AnalyzeView --------------------------------------------------------------
-export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, setStep, result, error, note, setNote, processProgress, processedFrames, approvedFrames, onLaneConfirm, onPrivacyConfirm, onReviewConfirm, onReviewBack, onSave, profile, pbs }) {
+export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, setStep, result, error, note, setNote, processProgress, processedFrames, approvedFrames, crop, privacyZones, onLaneConfirm, onPrivacyConfirm, onPreviewConfirm, onReviewConfirm, onReviewBack, onSave, profile, pbs }) {
   const sc = T.strokes[stroke];
 
   if (step === "select") {
@@ -229,6 +230,9 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
   }
   if (step === "privacy") {
     return <PrivacyEditor videoFile={videoFile} onConfirm={onPrivacyConfirm} onBack={() => setStep("select")} accent={sc.accent} frameCount={approvedFrames?.length || 20} />;
+  }
+  if (step === "preview") {
+    return <VideoPreview videoFile={videoFile} crop={crop} onConfirm={onPreviewConfirm} onBack={() => setStep("privacy")} />;
   }
   if (step === "processing") return <ProcessingScreen progress={processProgress} />;
   if (step === "review") {
