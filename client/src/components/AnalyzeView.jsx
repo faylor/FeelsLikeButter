@@ -7,31 +7,44 @@ import { TechniqueExample } from "./TechniqueExample.jsx";
 import { FrameReview } from "./FrameReview.jsx";
 
 // --- Processing screen --------------------------------------------------------
-function ProcessingScreen({ progress, frameCount }) {
+function ProcessingScreen({ progress }) {
   const phase = progress?.phase || "Initialising...";
-  const pct   = progress ? Math.round((progress.done / progress.total) * 100) : 0;
+  const done  = progress?.done  || 0;
+  const total = progress?.total || 0;
+  const pct   = total > 0 ? Math.round((done / total) * 100) : 0;
+
   return (
     <div style={{ padding: "80px 24px", textAlign: "center" }}>
       <div style={{ width: 32, height: 1, background: T.dark, margin: "0 auto 32px" }} />
-      <Label style={{ display: "block", marginBottom: 8, color: T.black }}>Processing Video</Label>
-      <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.8, margin: "0 0 20px" }}>
-        {phase}
-      </p>
-      {progress && (
-        <div style={{ maxWidth: 240, margin: "0 auto" }}>
-          <div style={{ height: 2, background: T.rule, borderRadius: 1, overflow: "hidden", marginBottom: 8 }}>
-            <div style={{ width: `${pct}%`, height: "100%", background: T.dark, transition: "width 0.3s ease" }} />
-          </div>
-          <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted }}>
-            {progress.done} / {progress.total} frames
-          </div>
+      <Label style={{ display: "block", marginBottom: 12, color: T.black }}>Processing Video</Label>
+
+      <div style={{ maxWidth: 280, margin: "0 auto 20px" }}>
+        <div style={{ height: 2, background: T.rule, borderRadius: 1, overflow: "hidden", marginBottom: 10 }}>
+          <div style={{ width: `${pct}%`, height: "100%", background: T.dark, transition: "width 0.4s ease" }} />
         </div>
-      )}
-      <div style={{ marginTop: 24, display: "inline-flex", alignItems: "center", gap: 6 }}>
-        <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#007A5E" }} />
-        <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: "#007A5E", letterSpacing: "0.06em" }}>
-          Tracking swimmer. Applying kinematics.
-        </span>
+        <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, marginBottom: 6 }}>
+          {phase}
+        </div>
+        {total > 1 && (
+          <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted }}>
+            {done} / {total} frames
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
+        {[
+          ["#007A5E", "Swimmer being tracked frame-by-frame"],
+          ["#007A5E", "Kinematics overlay being applied"],
+          ["#007A5E", "Faces obscured before any upload"],
+        ].map(([col, text]) => (
+          <div key={text} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <div style={{ width: 5, height: 5, borderRadius: "50%", background: col }} />
+            <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: col, letterSpacing: "0.04em" }}>
+              {text}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
