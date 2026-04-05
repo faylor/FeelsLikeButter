@@ -2,11 +2,34 @@ import "dotenv/config";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import { getProvider } from "./providers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app  = express();
 const PORT = process.env.PORT || 3001;
+
+// -- Supabase JWT verification -------------------------------------------------
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const JWKS = SUPABASE_URL
+  ? createRemoteJWKSet(new URL(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`))
+  : null;
+
+async function requireAuth(req, res, next) {
+  if (!JWKS) return res.status(503).json({ error: "Auth not configured on server." });
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing auth token." });
+  }
+  try {
+    const token = header.slice(7);
+    const { payload } = await jwtVerify(token, JWKS);
+    req.userId = payload.sub;
+    next();
+  } catch {
+    return res.status(401).json({ error: "Invalid or expired token." });
+  }
+}
 
 app.use(express.json({ limit: "20mb" }));
 
