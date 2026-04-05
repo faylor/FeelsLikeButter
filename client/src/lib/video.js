@@ -129,7 +129,6 @@ export async function extractTrackedFrames(
   let targetCx = (initialCrop?.x || 0) + (initialCrop?.w || 0.5) / 2;
   let targetCy = (initialCrop?.y || 0) + (initialCrop?.h || 0.5) / 2;
   let smoothCx = null, smoothCy = null;
-  let smoothW  = null, smoothH  = null;
   let lastGoodCrop = null;
   let lostCount = 0;
 
@@ -172,30 +171,52 @@ export async function extractTrackedFrames(
           if (match && match.bb.confidence > 0.3) {
             const bb = match.bb;
             lostCount = 0;
+            landmarks = match.landmarks;
+            tracked = true;
 
-            // Only update smooth position with confident detections
+            // Smooth POSITION with EMA -- prevents jitter
+            // Let SIZE adapt freely -- must follow body shape changes (crouch/dive/streamline)
             if (bb.confidence > 0.45) {
-              smoothCx = ema(smoothCx, bb.cx, 0.35);
-              smoothCy = ema(smoothCy, bb.cy, 0.35);
-              const nw = Math.min(bb.w * 1.25, 0.95);
-              const nh = Math.min(bb.h * 1.35, 0.95);
-              smoothW  = smoothW  === null ? nw : (nw > smoothW  ? ema(smoothW, nw, 0.5)  : ema(smoothW, nw, 0.1));
-              smoothH  = smoothH  === null ? nh : (nh > smoothH  ? ema(smoothH, nh, 0.5)  : ema(smoothH, nh, 0.1));
-              targetCx = smoothCx;
-              targetCy = smoothCy;
+              smoothCx = ema(smoothCx, bb.cx, 0.4);
+              smoothCy = ema(smoothCy, bb.cy, 0.4);
+            } else {
+              // Low confidence -- move target less aggressively
+              smoothCx = ema(smoothCx, bb.cx, 0.15);
+              smoothCy = ema(smoothCy, bb.cy, 0.15);
+            }
+            targetCx = smoothCx;
+            targetCy = smoothCy;
+
+            // Detect body orientation from shoulder/hip line
+            const ls = landmarks[11], rs = landmarks[12]; // shoulders
+            const lh = landmarks[23], rh = landmarks[24]; // hips
+            let orientation = "upright"; // default
+            if (ls && rs && lh && rh &&
+                (ls.visibility||0) > 0.3 && (rs.visibility||0) > 0.3) {
+              const shoulderAngle = Math.abs(Math.atan2(ls.y - rs.y, ls.x - rs.x) * 180 / Math.PI);
+              if (shoulderAngle > 45) orientation = "horizontal"; // diving/streamline
+              else if (shoulderAngle > 20) orientation = "angled"; // entering water
             }
 
+            // Padding per orientation -- horizontal swimmer needs wider crop
+            const padX = orientation === "horizontal" ? 0.18 : 0.15;
+            const padY = orientation === "horizontal" ? 0.25 : 0.18;
+
+            // Crop directly from actual pose bbox + orientation-aware padding
+            // No size smoothing -- adapt immediately to body shape
+            const cx = smoothCx, cy = smoothCy;
+            const hw = Math.min((bb.w / 2) + padX, 0.5);
+            const hh = Math.min((bb.h / 2) + padY, 0.5);
+
             cropBox = {
-              x: Math.max(0, Math.round((smoothCx - smoothW/2) * OUT_W)),
-              y: Math.max(0, Math.round((smoothCy - smoothH/2) * OUT_H)),
-              w: Math.min(OUT_W, Math.round(smoothW * OUT_W)),
-              h: Math.min(OUT_H, Math.round(smoothH * OUT_H)),
+              x: Math.max(0, Math.round((cx - hw) * OUT_W)),
+              y: Math.max(0, Math.round((cy - hh) * OUT_H)),
+              w: Math.min(OUT_W, Math.round(hw * 2 * OUT_W)),
+              h: Math.min(OUT_H, Math.round(hh * 2 * OUT_H)),
             };
             cropBox.w = Math.min(cropBox.w, OUT_W - cropBox.x);
             cropBox.h = Math.min(cropBox.h, OUT_H - cropBox.y);
             lastGoodCrop = { ...cropBox };
-            landmarks = match.landmarks;
-            tracked = true;
           } else {
             lostCount++;
           }
