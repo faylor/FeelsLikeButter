@@ -224,7 +224,7 @@ export function TargetsView({ profile, pbs, onSetupProfile, sessions }) {
       <div style={{ padding: "32px 24px 0" }}>
         <Label style={{ color: T.red, marginBottom: 6 }}>Surrey County 2027</Label>
         <div style={{ fontSize: 22, fontWeight: 300, letterSpacing: "-0.02em", color: T.black, marginBottom: 4 }}>
-          {profile.name}'s Targets
+          {profile.name}&apos;s Targets
         </div>
         <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted, marginBottom: 16 }}>
           Age {profile.age} . {profile.gender === "MALE" ? "Male/Open" : "Female"} . {profile.poolType === "LONG" ? "Long course" : "Short course"} . Age group {ag}
@@ -318,6 +318,7 @@ export function TargetsView({ profile, pbs, onSetupProfile, sessions }) {
         </div>
       </div>
       </div>
+      )}
     </div>
   );
 }
