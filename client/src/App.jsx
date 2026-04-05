@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { T } from "./tokens.js";
 import { STROKE_CHECKLISTS } from "./constants/strokes.js";
 import { loadSessions, saveSession, loadProfile, saveProfile, loadPbs, savePbs } from "./lib/storage.js";
-import { extractFrames } from "./lib/video.js";
+import { extractTrackedFrames } from "./lib/video.js";
 import { analyzeWithClaude } from "./lib/api.js";
 import { supabase } from "./lib/supabase.js";
 import { Auth }          from "./components/Auth.jsx";
@@ -16,28 +16,22 @@ import { Nav }           from "./components/Nav.jsx";
 
 export default function App() {
   // -- Auth ------------------------------------------------------------------
-  const [authUser, setAuthUser]   = useState(undefined); // undefined = loading
+  const [authUser, setAuthUser]   = useState(undefined);
   const [authToken, setAuthToken] = useState(null);
 
   useEffect(() => {
-    // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setAuthUser(session?.user ?? null);
       setAuthToken(session?.access_token ?? null);
     });
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
       setAuthUser(session?.user ?? null);
       setAuthToken(session?.access_token ?? null);
-      if (!session) {
-        // Clear data on logout
-        setSessions([]); setProfile(null); setPbs({});
-      }
+      if (!session) { setSessions([]); setProfile(null); setPbs({}); }
     });
     return () => subscription.unsubscribe();
   }, []);
 
-  // Load user data when auth is established
   useEffect(() => {
     if (!authUser) return;
     loadProfile(authUser.id).then(p => { if (p) setProfile(p); });
@@ -49,50 +43,67 @@ export default function App() {
   const [view, setView]             = useState("home");
   const [stroke, setStroke]         = useState("Freestyle");
   const [videoFile, setVideoFile]   = useState(null);
+  // steps: upload | select | privacy | processing | review | analyzing | result
   const [step, setStep]             = useState("upload");
   const [crop, setCrop]             = useState(null);
+  const [privacyZones, setPrivacyZones] = useState([]);
   const [result, setResult]         = useState(null);
   const [error, setError]           = useState(null);
-  const [analysedFrames, setAnalysedFrames] = useState([]); // annotated frames shown post-analysis
   const [sessions, setSessions]     = useState([]);
   const [note, setNote]             = useState("");
   const [profile, setProfile]       = useState(null);
   const [pbs, setPbs]               = useState({});
   const [showProfile, setShowProfile] = useState(false);
-  const [extractProgress, setExtractProgress] = useState(null);
+  const [processProgress, setProcessProgress] = useState(null);
   const [frameCount, setFrameCount] = useState(30);
+  const [processedFrames, setProcessedFrames] = useState([]); // all tracked frames
+  const [approvedFrames, setApprovedFrames]   = useState([]); // user-approved subset
 
   const accentColor = T.strokes[stroke].accent;
 
-  // -- Helper: auth header for API calls ------------------------------------
-  const authHeaders = () => authToken
-    ? { "Authorization": `Bearer ${authToken}` }
-    : {};
-
-  // -- Analysis flow ---------------------------------------------------------
+  // -- Lane confirm ----------------------------------------------------------
   const handleLaneConfirm = (selectedCrop) => {
     setCrop(selectedCrop); setStep("privacy");
   };
 
+  // -- Privacy confirm: start processing ------------------------------------
   const handlePrivacyConfirm = async (zones) => {
-    setStep("analyzing"); setExtractProgress(null); setError(null);
+    setPrivacyZones(zones);
+    setStep("processing");
+    setProcessProgress(null);
+    setError(null);
     try {
-      const frames = await extractFrames(
-        videoFile, zones, frameCount, crop,
-        (done, total) => setExtractProgress({ done, total }),
-        false,
-        stroke  // enables MediaPipe pose annotation
+      const frames = await extractTrackedFrames(
+        videoFile, crop, zones, frameCount, stroke,
+        (done, total, phase) => setProcessProgress({ done, total, phase })
       );
-      setExtractProgress(null);
-      const r = await analyzeWithClaude(frames, stroke, STROKE_CHECKLISTS[stroke]);
-      setAnalysedFrames(frames);
-      setResult(r); setStep("result");
+      setProcessedFrames(frames);
+      setProcessProgress(null);
+      setStep("review"); // show frame review before sending to AI
     } catch (e) {
-      setError(`Analysis failed -- ${e.message}`);
-      setExtractProgress(null); setStep("upload");
+      setError(`Processing failed -- ${e.message}`);
+      setProcessProgress(null);
+      setStep("upload");
     }
   };
 
+  // -- User approves frames: send to Claude ---------------------------------
+  const handleReviewConfirm = async (approved) => {
+    setApprovedFrames(approved);
+    setStep("analyzing");
+    setError(null);
+    try {
+      const base64Frames = approved.map(f => f.data);
+      const r = await analyzeWithClaude(base64Frames, stroke, STROKE_CHECKLISTS[stroke]);
+      setResult(r);
+      setStep("result");
+    } catch (e) {
+      setError(`Analysis failed -- ${e.message}`);
+      setStep("review");
+    }
+  };
+
+  // -- Save session ----------------------------------------------------------
   const handleSave = async () => {
     if (!result || !authUser) return;
     const session = {
@@ -104,18 +115,16 @@ export default function App() {
       const updated = await loadSessions(authUser.id);
       setSessions(updated);
     } catch (e) { console.error("Save failed:", e); }
-    setNote(""); setResult(null); setVideoFile(null); setCrop(null);
-    setAnalysedFrames([]);
-    setStep("upload"); setView("history");
+    // Reset
+    setNote(""); setResult(null); setVideoFile(null);
+    setCrop(null); setPrivacyZones([]); setProcessedFrames([]);
+    setApprovedFrames([]); setStep("upload"); setView("history");
   };
 
   // -- Profile save ----------------------------------------------------------
   const handleProfileSave = async ({ profile: p, pbs: b }) => {
     setProfile(p); setPbs(b);
-    if (authUser) {
-      await saveProfile(authUser.id, p);
-      await savePbs(authUser.id, b);
-    }
+    if (authUser) { await saveProfile(authUser.id, p); await savePbs(authUser.id, b); }
     setShowProfile(false); setView("targets");
   };
 
@@ -133,13 +142,12 @@ export default function App() {
   // -- Navigation ------------------------------------------------------------
   const handleNavigate = (id) => {
     setView(id);
-    if (id === "analyze" && step === "result") setStep("upload");
-    if (id === "analyze" && step === "timing") setStep("upload");
+    if (id === "analyze" && ["result","review","processing"].includes(step)) setStep("upload");
   };
 
   const handleStrokeSelect = (s) => { setStroke(s); setView("analyze"); };
 
-  // -- Loading splash --------------------------------------------------------
+  // -- Loading ---------------------------------------------------------------
   if (authUser === undefined) {
     return (
       <div style={{ minHeight: "100vh", background: T.white, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -186,11 +194,14 @@ export default function App() {
           step={step} setStep={setStep}
           result={result} error={error}
           note={note} setNote={setNote}
-          extractProgress={extractProgress}
+          processProgress={processProgress}
           frameCount={frameCount} setFrameCount={setFrameCount}
-          analysedFrames={analysedFrames}
+          processedFrames={processedFrames}
+          approvedFrames={approvedFrames}
           onLaneConfirm={handleLaneConfirm}
           onPrivacyConfirm={handlePrivacyConfirm}
+          onReviewConfirm={handleReviewConfirm}
+          onReviewBack={() => setStep("privacy")}
           onSave={handleSave}
           profile={profile} pbs={pbs}
         />
