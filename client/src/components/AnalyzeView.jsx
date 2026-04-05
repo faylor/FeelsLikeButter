@@ -201,7 +201,7 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
     return <LaneSelector videoFile={videoFile} onConfirm={onLaneConfirm} onBack={() => setStep("upload")} accent={sc.accent} />;
   }
   if (step === "privacy") {
-    return <PrivacyEditor videoFile={videoFile} onConfirm={onPrivacyConfirm} onBack={() => setStep("select")} accent={sc.accent} />;
+    return <PrivacyEditor videoFile={videoFile} onConfirm={onPrivacyConfirm} onBack={() => setStep("select")} accent={sc.accent} frameCount={frameCount} />;
   }
   if (step === "analyzing") return <AnalyzingScreen extractProgress={extractProgress} frameCount={frameCount} />;
 
