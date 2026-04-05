@@ -78,7 +78,9 @@ export default function App() {
     try {
       const frames = await extractFrames(
         videoFile, zones, frameCount, crop,
-        (done, total) => setExtractProgress({ done, total })
+        (done, total) => setExtractProgress({ done, total }),
+        false,
+        stroke  // enables MediaPipe pose annotation
       );
       setExtractProgress(null);
       const r = await analyzeWithClaude(frames, stroke, STROKE_CHECKLISTS[stroke]);
