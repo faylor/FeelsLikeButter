@@ -24,6 +24,11 @@ function SwimEnglandImport({ onImport }) {
     setLoading(true); setError(null); setImported(null);
     try {
       const res = await fetch(`/api/swim-results?tiref=${encodeURIComponent(tiref.trim())}`);
+      // Guard against HTML error pages (e.g. server crash returns <!DOCTYPE...)
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        throw new Error("Server returned an unexpected response. Check Heroku logs.");
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to fetch");
       setImported(data);
