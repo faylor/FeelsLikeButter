@@ -1,5 +1,5 @@
 import { T } from "../tokens.js";
-import { STROKE_ICONS } from "../constants.js";
+import { STROKE_ICONS } from "../constants/strokes.js";
 import { Rule, Label, ThinBar } from "./ui.jsx";
 
 export function ReportView({ sessions }) {
