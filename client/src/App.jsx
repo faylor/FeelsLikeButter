@@ -75,8 +75,8 @@ export default function App() {
   };
 
   // -- Preview confirmed: start full processing -----------------------------
-  const handlePreviewConfirm = async (goodTimes) => {
-    setPreviewTimes(goodTimes);
+  const handlePreviewConfirm = async ({ landmarks, bb, time, laneRopes }) => {
+    setPreviewTimes(bb ? [time] : []);
     setStep("processing");
     setProcessProgress(null);
     setError(null);
@@ -84,7 +84,8 @@ export default function App() {
       const frames = await extractTrackedFrames(
         videoFile, crop, privacyZones,
         0.5, stroke,
-        (done, total, phase) => setProcessProgress({ done, total, phase })
+        (done, total, phase) => setProcessProgress({ done, total, phase }),
+        landmarks, bb, laneRopes
       );
       setProcessedFrames(frames);
       setProcessProgress(null);
