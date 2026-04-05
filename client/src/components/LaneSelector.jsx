@@ -71,7 +71,7 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
           ctx.fillText("SWIMMER", crop.x + 6, crop.y - 5);
         }
       } else {
-        // No selection yet — show crosshair hint text
+        // No selection yet  show crosshair hint text
         ctx.fillStyle = "rgba(255,255,255,0.7)";
         ctx.font      = "12px 'Helvetica Neue', sans-serif";
         ctx.textAlign = "center";
@@ -86,8 +86,11 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
   const getPos = (e) => {
     const r  = canvasRef.current.getBoundingClientRect();
     const sx = CW / r.width, sy = CH / r.height;
-    const cx = e.touches ? e.touches[0].clientX : e.clientX;
-    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    // touches[0] works for touchstart/touchmove
+    // changedTouches[0] is needed for touchend (touches is empty on end)
+    const touch = e.touches?.[0] ?? e.changedTouches?.[0];
+    const cx = touch ? touch.clientX : e.clientX;
+    const cy = touch ? touch.clientY : e.clientY;
     return { x: (cx - r.left) * sx, y: (cy - r.top) * sy };
   };
 
@@ -118,14 +121,14 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
       w: Math.abs(p.x - startPt.x),
       h: Math.abs(p.y - startPt.y),
     };
-    // Require a minimum 40×40 selection
-    if (z.w > 40 && z.h > 40) setCrop(z);
+    // 15px minimum in canvas coords - permissive enough for mobile fingers
+    if (z.w > 15 && z.h > 15) setCrop(z);
     setDrawing(false);
     setStartPt(null);
     setLiveRect(null);
   };
 
-  // Normalise crop to 0–1 ratios so video.js can apply it regardless of source res
+  // Normalise crop to 01 ratios so video.js can apply it regardless of source res
   const handleConfirm = () => {
     if (!crop) return;
     onConfirm({
@@ -138,7 +141,7 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
 
   if (!ready) return (
     <div style={{ padding: "40px 24px", textAlign: "center" }}>
-      <Label style={{ display: "block" }}>Loading preview…</Label>
+      <Label style={{ display: "block" }}>Loading preview</Label>
     </div>
   );
 
@@ -153,7 +156,7 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
         </div>
         <Rule />
         <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 13, color: T.mid, lineHeight: 1.6, margin: "16px 0 20px" }}>
-          Drag a box around your son so the AI focuses only on him — ignoring other swimmers and lanes.
+          Drag a box around your son so the AI focuses only on him  ignoring other swimmers and lanes.
         </p>
       </div>
 
@@ -171,7 +174,7 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
           <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: crop ? T.dark : T.muted }}>
             {crop
-              ? `Selection: ${Math.round(crop.w)}×${Math.round(crop.h)}px`
+              ? `Selection: ${Math.round(crop.w)}x${Math.round(crop.h)}px`
               : "No swimmer selected yet"}
           </span>
           {crop && (
@@ -188,7 +191,7 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
       <div style={{ margin: "16px 24px 24px", padding: "12px 16px", background: T.offWhite }}>
         <Label style={{ marginBottom: 8 }}>Tips for a good selection</Label>
         {[
-          "Include the full body — head to toes",
+          "Include the full body  head to toes",
           "A bit of water around him is fine",
           "If he moves across lanes, cover his full range",
         ].map((t, i) => (
@@ -207,9 +210,9 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
           onClick={handleConfirm}
           accent={accent}
           style={{ opacity: crop ? 1 : 0.4, pointerEvents: crop ? "auto" : "none" }}>
-          Confirm Selection →
+          Confirm Selection 
         </Btn>
-        <Btn onClick={onBack} variant="secondary">← Back</Btn>
+        <Btn onClick={onBack} variant="secondary"> Back</Btn>
       </div>
     </div>
   );
