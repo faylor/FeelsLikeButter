@@ -4,7 +4,6 @@ import { Rule, Label, ScoreRing, StatusMark, ThinBar, StrokeChip, Btn } from "./
 import { PrivacyEditor } from "./PrivacyEditor.jsx";
 import { LaneSelector } from "./LaneSelector.jsx";
 import { TechniqueExample } from "./TechniqueExample.jsx";
-import { TimingAnalysis } from "./TimingAnalysis.jsx";
 
 // --- Analyzing spinner --------------------------------------------------------
 function AnalyzingScreen({ extractProgress }) {
@@ -204,12 +203,8 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
     return <PrivacyEditor videoFile={videoFile} onConfirm={onPrivacyConfirm} onBack={() => setStep("select")} accent={sc.accent} />;
   }
   if (step === "analyzing") return <AnalyzingScreen extractProgress={extractProgress} />;
-  if (step === "timing") {
-    return <TimingAnalysis stroke={stroke} profile={profile} pbs={pbs} onBack={() => setStep("upload")} />;
-  }
 
   const MODES = [
-    { key: "timing", label: "Timing", sub: "Splits & turns, no video" },
     { key: "quick",    label: "Quick",    sub: "8 frames" },
     { key: "standard", label: "Standard", sub: "30 frames" },
     { key: "deep",     label: "Deep",     sub: "60 frames" },
@@ -240,11 +235,10 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
         <Label style={{ marginBottom: 10 }}>Analysis mode</Label>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6 }}>
           {MODES.map(m => {
-            const active = m.key === "timing" ? step === "timing" : modeKey === m.key;
+            const active = modeKey === m.key;
             return (
               <button key={m.key}
                 onClick={() => {
-                  if (m.key === "timing") { setStep("timing"); return; }
                   const counts = { quick: 8, standard: 30, deep: 60 };
                   setFrameCount(counts[m.key]);
                 }}
