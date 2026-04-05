@@ -123,7 +123,7 @@ function LaneRopeStep({ frame, onConfirm, onBack }) {
   const handleConfirm = () => onConfirm({ laneRopes: lines });
 
   return (
-    <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 100 }}>
+    <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 160 }}>
       <div style={{ padding: "24px 24px 16px" }}>
         <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 12px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
           &larr; Back
@@ -166,7 +166,7 @@ function LaneRopeStep({ frame, onConfirm, onBack }) {
       )}
 
       {/* Actions */}
-      <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.white, borderTop: `1px solid ${T.rule}`, padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ position: "fixed", bottom: 72, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.white, borderTop: `1px solid ${T.rule}`, padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
         <Btn onClick={handleConfirm}>
           {eitherDrawn ? "Confirm Lane Ropes -- Start Processing" : "Skip -- Process Without Lane Ropes"}
         </Btn>
@@ -235,7 +235,7 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
   const totalPoses = frames.reduce((s, f) => s + f.poses.length, 0);
 
   return (
-    <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 100 }}>
+    <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 160 }}>
       <div style={{ padding: "32px 24px 20px" }}>
         <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 14px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
           &larr; Back
@@ -254,6 +254,25 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
 
       {error && (
         <div style={{ margin: "0 24px 16px", padding: "10px 14px", background: "#FFF0F0", borderLeft: `3px solid ${T.red}`, fontSize: 12, color: T.red, fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif" }}>{error}</div>
+      )}
+
+      {!error && frames.length > 0 && totalPoses === 0 && (
+        <div style={{ margin: "0 24px 16px", padding: "12px 14px", background: "#FFF5EB", borderLeft: `3px solid #C4610A` }}>
+          <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: "#C4610A", marginBottom: 8, lineHeight: 1.5 }}>
+            No people detected. The AI pose detector may still be loading -- tap Retry in a few seconds. Or proceed without pose detection.
+          </div>
+          <button onClick={() => {
+            setLoading(true); setFrames([]); setSelected(null);
+            extractPreviewFrames(videoFile)
+              .then(f => { setFrames(f); setLoading(false);
+                const all = f.flatMap((fr, fi) => fr.poses.map(p => ({ fi, pi: p.idx })));
+                if (all.length === 1) setSelected({ frameIdx: all[0].fi, poseIdx: all[0].pi });
+              })
+              .catch(e => { setError(e.message); setLoading(false); });
+          }} style={{ background: "#C4610A", border: "none", color: "#fff", padding: "7px 16px", fontSize: 11, cursor: "pointer", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", letterSpacing: "0.06em" }}>
+            Retry Detection
+          </button>
+        </div>
       )}
 
       {selected && (
@@ -335,7 +354,7 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
       )}
 
       {/* Action bar */}
-      <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.white, borderTop: `1px solid ${T.rule}`, padding: "14px 24px" }}>
+      <div style={{ position: "fixed", bottom: 72, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.white, borderTop: `1px solid ${T.rule}`, padding: "14px 24px" }}>
         {!selected && totalPoses > 0 && (
           <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: "#C4610A", marginBottom: 8, textAlign: "center" }}>
             Tap a box to confirm your swimmer -- or skip to proceed
