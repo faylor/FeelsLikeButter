@@ -65,7 +65,8 @@ function seekTo(video, t) {
 // --- Extract ALL frames with tracking + kinematics ---------------------------
 // Uses 640x360 capture -- high enough for analysis, safe on mobile memory
 export async function extractTrackedFrames(
-  videoFile, initialCrop, redactZones, intervalSecs = 0.5, stroke, onProgress
+  videoFile, initialCrop, redactZones, intervalSecs = 0.5, stroke, onProgress,
+  seedLandmarks = null, seedBb = null, laneRopes = null
 ) {
   const OUT_W = 640, OUT_H = 360;
 
@@ -125,12 +126,26 @@ export async function extractTrackedFrames(
     setTimeout(res, 10000); // fallback
   });
 
-  // Tracking state
-  let targetCx = (initialCrop?.x || 0) + (initialCrop?.w || 0.5) / 2;
-  let targetCy = (initialCrop?.y || 0) + (initialCrop?.h || 0.5) / 2;
-  let smoothCx = null, smoothCy = null;
+  // Tracking state -- initialise from confirmed seed if available
+  let targetCx = seedBb ? seedBb.cx : (initialCrop?.x || 0) + (initialCrop?.w || 0.5) / 2;
+  let targetCy = seedBb ? seedBb.cy : (initialCrop?.y || 0) + (initialCrop?.h || 0.5) / 2;
+  let targetW  = seedBb ? seedBb.w  : (initialCrop?.w || 0.5);
+  let targetH  = seedBb ? seedBb.h  : (initialCrop?.h || 0.5);
+  let smoothCx = targetCx, smoothCy = targetCy;
   let lastGoodCrop = null;
   let lostCount = 0;
+
+  // IoU helper -- prevents tracker jumping to wrong person
+  function iou(a, b) {
+    const ax2 = a.cx + a.w/2, ay2 = a.cy + a.h/2;
+    const bx2 = b.cx + b.w/2, by2 = b.cy + b.h/2;
+    const ix1 = Math.max(a.cx - a.w/2, b.cx - b.w/2);
+    const iy1 = Math.max(a.cy - a.h/2, b.cy - b.h/2);
+    const ix2 = Math.min(ax2, bx2), iy2 = Math.min(ay2, by2);
+    const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
+    const union = a.w * a.h + b.w * b.h - inter;
+    return union > 0 ? inter / union : 0;
+  }
 
   const frames = [];
 
@@ -166,27 +181,48 @@ export async function extractTrackedFrames(
 
       if (poseReady && poseModule) {
         try {
-          // Always detect on the full captured frame
           const poses = await poseModule.detectPoses(cap);
 
-          // Find pose closest to last known position
-          const searchCx = smoothCx !== null ? smoothCx : targetCx;
-          const searchCy = smoothCy !== null ? smoothCy : targetCy;
-          const match = poseModule.closestPose(poses, searchCx, searchCy);
+          // Use IoU matching when we have a previous position (prevents drift)
+          // Fall back to centre-distance for first frame
+          let chosenMatch = null;
+          if (poses.length > 0) {
+            const prevBb = { cx: smoothCx, cy: smoothCy, w: targetW, h: targetH };
+            let bestScore = -1;
 
-          if (match && match.bb.confidence > 0.25) {
-            const bb = match.bb;
+            poses.forEach(lms => {
+              const bb = poseModule.getPoseBoundingBox(lms);
+              if (!bb || bb.confidence < 0.25) return;
+              // Score = IoU with previous box (weighted) + proximity + confidence
+              const overlap = iou(prevBb, bb);
+              const dist    = Math.hypot(bb.cx - smoothCx, bb.cy - smoothCy);
+              const score   = overlap * 0.6 + (1 - Math.min(dist, 1)) * 0.2 + bb.confidence * 0.2;
+              if (score > bestScore) { bestScore = score; chosenMatch = { landmarks: lms, bb }; }
+            });
+
+            // Reject match if it jumps too far with low overlap (wrong person)
+            if (chosenMatch) {
+              const jumpDist = Math.hypot(chosenMatch.bb.cx - smoothCx, chosenMatch.bb.cy - smoothCy);
+              const overlap  = iou(prevBb, chosenMatch.bb);
+              if (jumpDist > 0.35 && overlap < 0.05 && lostCount === 0) {
+                console.log(`[video] frame ${idx}: rejected jump dist=${jumpDist.toFixed(2)} iou=${overlap.toFixed(2)}`);
+                chosenMatch = null;
+              }
+            }
+          }
+
+          if (chosenMatch && chosenMatch.bb.confidence > 0.25) {
+            const bb = chosenMatch.bb;
             lostCount = 0;
-            landmarks = match.landmarks;
+            landmarks = chosenMatch.landmarks;
             tracked = true;
 
-            // Smooth POSITION only -- size follows the actual pose shape
             smoothCx = ema(smoothCx, bb.cx, 0.45);
             smoothCy = ema(smoothCy, bb.cy, 0.45);
-            targetCx = smoothCx;
-            targetCy = smoothCy;
+            targetCx = smoothCx; targetCy = smoothCy;
+            targetW = bb.w; targetH = bb.h;
 
-            // Detect body orientation from shoulder line angle
+            // Orientation from shoulder line
             const ls = landmarks[11], rs = landmarks[12];
             let orientation = "upright";
             if (ls && rs && (ls.visibility||0) > 0.3 && (rs.visibility||0) > 0.3) {
@@ -195,8 +231,6 @@ export async function extractTrackedFrames(
               else if (angle > 20) orientation = "angled";
             }
 
-            // Generous padding based on orientation
-            // Horizontal (dive/streamline) needs much wider crop
             const padX = orientation === "horizontal" ? 0.22 : 0.15;
             const padY = orientation === "horizontal" ? 0.28 : 0.18;
 
@@ -208,6 +242,20 @@ export async function extractTrackedFrames(
             };
             cropBox.w = Math.min(cropBox.w, OUT_W - cropBox.x);
             cropBox.h = Math.min(cropBox.h, OUT_H - cropBox.y);
+
+            // If lane ropes defined, clamp crop to stay within lane
+            if (laneRopes) {
+              const upperY = laneRopes.upper
+                ? Math.min(laneRopes.upper.y1, laneRopes.upper.y2) * OUT_H
+                : 0;
+              const lowerY = laneRopes.lower
+                ? Math.max(laneRopes.lower.y1, laneRopes.lower.y2) * OUT_H
+                : OUT_H;
+              cropBox.y = Math.max(cropBox.y, upperY - 10);
+              const bottom = Math.min(cropBox.y + cropBox.h, lowerY + 10);
+              cropBox.h = bottom - cropBox.y;
+            }
+
             lastGoodCrop = { ...cropBox };
 
           } else {
@@ -278,7 +326,30 @@ export async function extractTrackedFrames(
         }
       }
 
-      // 7. Status badge
+      // 7. Draw lane rope reference lines on output frame
+      if (laneRopes && mapping) {
+        const drawRope = (rope, color) => {
+          if (!rope) return;
+          // Remap rope coords from full-frame normalised to output canvas
+          const remap = (nx, ny) => ({
+            x: mapping.dx + ((nx * OUT_W - (cropBox?.x||0)) / (cropBox?.w||OUT_W)) * mapping.dw,
+            y: mapping.dy + ((ny * OUT_H - (cropBox?.y||0)) / (cropBox?.h||OUT_H)) * mapping.dh,
+          });
+          const p1 = remap(rope.x1, rope.y1), p2 = remap(rope.x2, rope.y2);
+          oCtx.strokeStyle = color;
+          oCtx.lineWidth = 1.5;
+          oCtx.setLineDash([8, 4]);
+          oCtx.beginPath();
+          oCtx.moveTo(p1.x, p1.y);
+          oCtx.lineTo(p2.x, p2.y);
+          oCtx.stroke();
+          oCtx.setLineDash([]);
+        };
+        drawRope(laneRopes.upper, "#FFD600");
+        drawRope(laneRopes.lower, "#00E5FF");
+      }
+
+      // 8. Status badge
       oCtx.fillStyle = "rgba(0,0,0,0.65)";
       oCtx.fillRect(0, OUT_H - 22, 100, 22);
       oCtx.fillStyle = "#fff";
@@ -364,34 +435,129 @@ export async function extractFramesAtTimes(videoFile, timestamps, redactZones = 
   });
 }
 
-// --- Quick 5-frame preview for swimmer confirmation --------------------------
-// Returns 5 evenly-spaced frames from the video as base64 JPEGs
+// --- Quick 5-frame preview with pose bounding boxes for swimmer selection ----
+// Samples from first 5 seconds, runs pose detection, draws numbered boxes
+// Returns [{data, time, poses: [{bb, color, idx}]}]
 export async function extractPreviewFrames(videoFile) {
+  const OUT_W = 640, OUT_H = 360;
+
+  // Load pose module
+  let poseModule = null;
+  try {
+    poseModule = await import("./pose.js");
+    await poseModule.initPoseDetector();
+  } catch (e) {
+    console.warn("[preview] pose unavailable:", e.message);
+  }
+
   return new Promise((resolve, reject) => {
     const video = document.createElement("video");
     const objUrl = URL.createObjectURL(videoFile);
     video.src = objUrl; video.muted = true; video.playsInline = true; video.preload = "auto";
     video.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error("Video failed to load")); };
-    video.onloadedmetadata = () => {
+
+    video.onloadedmetadata = async () => {
       const dur = video.duration;
-      if (!dur || dur < 0.5) { URL.revokeObjectURL(objUrl); reject(new Error("Video too short")); return; }
-      const times = [0.1, 0.25, 0.5, 0.75, 0.92].map(p => parseFloat((dur * p).toFixed(2)));
-      const frames = []; let idx = 0;
-      const next = () => {
-        if (idx >= times.length) { URL.revokeObjectURL(objUrl); resolve(frames); return; }
-        video.currentTime = times[idx];
-        let done = false;
-        const finish = () => { if (done) return; done = true;
-          const c = document.createElement("canvas"); c.width = 320; c.height = 180;
-          c.getContext("2d").drawImage(video, 0, 0, 320, 180);
-          frames.push({ data: c.toDataURL("image/jpeg", 0.8).split(",")[1], time: times[idx] });
-          idx++; next();
-        };
-        video.onseeked = finish;
-        setTimeout(finish, 2000);
-      };
-      next();
+      if (!dur || dur < 0.3) { URL.revokeObjectURL(objUrl); reject(new Error("Video too short")); return; }
+
+      // 5 frames spread across first 5 seconds (or whole video if shorter)
+      const window = Math.min(5.0, dur - 0.2);
+      const times = [0, 0.25, 0.5, 0.75, 1.0].map(p =>
+        parseFloat(Math.max(0.1, p * window).toFixed(2))
+      );
+
+      const results = [];
+
+      for (const t of times) {
+        await new Promise(res => {
+          let done = false;
+          const finish = () => { if (!done) { done = true; res(); } };
+          video.onseeked = finish;
+          video.currentTime = t;
+          setTimeout(finish, 2000);
+        });
+
+        // Capture frame
+        const canvas = document.createElement("canvas");
+        canvas.width = OUT_W; canvas.height = OUT_H;
+        canvas.getContext("2d").drawImage(video, 0, 0, OUT_W, OUT_H);
+
+        // Detect poses
+        let detectedPoses = [];
+        if (poseModule) {
+          try {
+            const poses = await poseModule.detectPoses(canvas);
+            detectedPoses = poses
+              .map((landmarks, i) => ({
+                landmarks,
+                bb: poseModule.getPoseBoundingBox(landmarks),
+                idx: i,
+              }))
+              .filter(p => p.bb && p.bb.confidence > 0.25)
+              .slice(0, 4); // max 4 boxes shown
+          } catch (e) {
+            console.warn("[preview] detect error:", e.message);
+          }
+        }
+
+        // Draw bounding boxes on the frame
+        const ctx = canvas.getContext("2d");
+        const BOX_COLORS = ["#E63946", "#2196F3", "#FF9800", "#9C27B0"];
+
+        detectedPoses.forEach(({ bb, idx }) => {
+          const col = BOX_COLORS[idx % BOX_COLORS.length];
+          const x = bb.x * OUT_W, y = bb.y * OUT_H;
+          const w = bb.w * OUT_W, h = bb.h * OUT_H;
+
+          // Box
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 3;
+          ctx.strokeRect(x, y, w, h);
+
+          // Label
+          const label = `Person ${idx + 1}`;
+          ctx.font = "bold 13px sans-serif";
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = col;
+          ctx.fillRect(x, y - 22, tw + 12, 22);
+          ctx.fillStyle = "#fff";
+          ctx.fillText(label, x + 6, y - 6);
+        });
+
+        // If no poses detected, note it
+        if (detectedPoses.length === 0) {
+          ctx.fillStyle = "rgba(0,0,0,0.6)";
+          ctx.fillRect(0, OUT_H/2 - 18, OUT_W, 36);
+          ctx.fillStyle = "#fff";
+          ctx.font = "13px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText("No person detected", OUT_W/2, OUT_H/2 + 5);
+          ctx.textAlign = "left";
+        }
+
+        // Timestamp
+        ctx.fillStyle = "rgba(0,0,0,0.6)";
+        ctx.fillRect(0, OUT_H - 22, 70, 22);
+        ctx.fillStyle = "#fff";
+        ctx.font = "10px sans-serif";
+        ctx.fillText(`${t.toFixed(1)}s`, 6, OUT_H - 7);
+
+        results.push({
+          data:   canvas.toDataURL("image/jpeg", 0.85).split(",")[1],
+          time:   t,
+          poses:  detectedPoses.map(p => ({
+            bb:    p.bb,
+            idx:   p.idx,
+            color: BOX_COLORS[p.idx % BOX_COLORS.length],
+            landmarks: p.landmarks,
+          })),
+        });
+      }
+
+      URL.revokeObjectURL(objUrl);
+      resolve(results);
     };
+
     video.load();
   });
 }
