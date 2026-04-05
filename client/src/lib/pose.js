@@ -1,8 +1,6 @@
 // --- MediaPipe Pose overlay for swimming analysis ----------------------------
-// Uses @mediapipe/tasks-vision via CDN (loaded dynamically)
-// Annotates key joint angles onto canvas frames before sending to Claude
+// Lazy-loaded from CDN -- runs entirely in browser, no server needed
 
-// MediaPipe landmark indices
 const LM = {
   NOSE: 0,
   LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12,
@@ -13,7 +11,6 @@ const LM = {
   LEFT_ANKLE: 27,    RIGHT_ANKLE: 28,
 };
 
-// Skeleton connections to draw
 const SKELETON = [
   [LM.LEFT_SHOULDER,  LM.RIGHT_SHOULDER],
   [LM.LEFT_SHOULDER,  LM.LEFT_ELBOW],
@@ -29,37 +26,37 @@ const SKELETON = [
   [LM.RIGHT_KNEE,     LM.RIGHT_ANKLE],
 ];
 
-// Calculate angle at joint B given points A, B, C (degrees)
 function angleBetween(a, b, c) {
   const ab = { x: a.x - b.x, y: a.y - b.y };
   const cb = { x: c.x - b.x, y: c.y - b.y };
   const dot = ab.x * cb.x + ab.y * cb.y;
-  const magAB = Math.sqrt(ab.x ** 2 + ab.y ** 2);
-  const magCB = Math.sqrt(cb.x ** 2 + cb.y ** 2);
-  if (magAB === 0 || magCB === 0) return null;
-  const cosAngle = Math.max(-1, Math.min(1, dot / (magAB * magCB)));
-  return Math.round(Math.acos(cosAngle) * (180 / Math.PI));
+  const mag = Math.sqrt(ab.x**2 + ab.y**2) * Math.sqrt(cb.x**2 + cb.y**2);
+  if (mag === 0) return null;
+  return Math.round(Math.acos(Math.max(-1, Math.min(1, dot / mag))) * (180 / Math.PI));
 }
 
-// Body line angle vs horizontal (for rotation/body position)
-function bodyLineAngle(lm) {
-  const ls = lm[LM.LEFT_SHOULDER], rs = lm[LM.RIGHT_SHOULDER];
-  if (!ls || !rs) return null;
-  return Math.round(Math.atan2(ls.y - rs.y, ls.x - rs.x) * (180 / Math.PI));
+// Get bounding box of a pose in pixel coords
+export function getPoseBoundingBox(landmarks, W, H, padding = 0.12) {
+  const visible = landmarks.filter(l => l.visibility > 0.3);
+  if (visible.length < 4) return null;
+  const xs = visible.map(l => l.x);
+  const ys = visible.map(l => l.y);
+  const minX = Math.max(0, Math.min(...xs) - padding);
+  const maxX = Math.min(1, Math.max(...xs) + padding);
+  const minY = Math.max(0, Math.min(...ys) - padding);
+  const maxY = Math.min(1, Math.max(...ys) + padding);
+  return {
+    x: minX * W, y: minY * H,
+    w: (maxX - minX) * W,
+    h: (maxY - minY) * H,
+    cx: (minX + maxX) / 2,
+    cy: (minY + maxY) / 2,
+  };
 }
 
-// Hip rotation angle
-function hipRotationAngle(lm) {
-  const lh = lm[LM.LEFT_HIP], rh = lm[LM.RIGHT_HIP];
-  if (!lh || !rh) return null;
-  return Math.round(Math.atan2(lh.y - rh.y, lh.x - rh.x) * (180 / Math.PI));
-}
-
-// Key angles to measure per stroke
+// Get stroke-specific angles
 function getStrokeAngles(stroke, lm) {
   const angles = [];
-
-  // Helper to add angle if landmarks are visible enough
   const add = (label, a, b, c) => {
     const pa = lm[a], pb = lm[b], pc = lm[c];
     if (!pa || !pb || !pc) return;
@@ -68,98 +65,85 @@ function getStrokeAngles(stroke, lm) {
     if (deg !== null) angles.push({ label, deg, x: pb.x, y: pb.y });
   };
 
-  // Body line angle (always)
-  const bla = bodyLineAngle(lm);
-  if (bla !== null) {
-    const ls = lm[LM.LEFT_SHOULDER];
-    if (ls) angles.push({ label: "body", deg: Math.abs(bla), x: ls.x, y: ls.y - 0.05 });
+  // Body line vs horizontal
+  const ls = lm[LM.LEFT_SHOULDER], rs = lm[LM.RIGHT_SHOULDER];
+  if (ls && rs && ls.visibility > 0.4 && rs.visibility > 0.4) {
+    const bodyAngle = Math.abs(Math.round(Math.atan2(ls.y - rs.y, ls.x - rs.x) * 180 / Math.PI));
+    angles.push({ label: "body", deg: bodyAngle, x: (ls.x + rs.x) / 2, y: Math.min(ls.y, rs.y) - 0.04 });
   }
 
   if (stroke === "Freestyle" || stroke === "Backstroke") {
-    add("L-elbow", LM.LEFT_SHOULDER,  LM.LEFT_ELBOW,  LM.LEFT_WRIST);
-    add("R-elbow", LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST);
-    add("L-shoulder", LM.LEFT_ELBOW,  LM.LEFT_SHOULDER,  LM.LEFT_HIP);
-    add("R-shoulder", LM.RIGHT_ELBOW, LM.RIGHT_SHOULDER, LM.RIGHT_HIP);
+    add("L-elbow",    LM.LEFT_SHOULDER,  LM.LEFT_ELBOW,   LM.LEFT_WRIST);
+    add("R-elbow",    LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW,  LM.RIGHT_WRIST);
+    add("L-shoulder", LM.LEFT_ELBOW,     LM.LEFT_SHOULDER, LM.LEFT_HIP);
+    add("R-shoulder", LM.RIGHT_ELBOW,    LM.RIGHT_SHOULDER,LM.RIGHT_HIP);
     // Hip rotation
-    const hr = hipRotationAngle(lm);
-    if (hr !== null) {
-      const lh = lm[LM.LEFT_HIP];
-      if (lh) angles.push({ label: "hip-rot", deg: Math.abs(hr), x: lh.x, y: lh.y });
+    const lh = lm[LM.LEFT_HIP], rh = lm[LM.RIGHT_HIP];
+    if (lh && rh && lh.visibility > 0.4 && rh.visibility > 0.4) {
+      const hr = Math.abs(Math.round(Math.atan2(lh.y - rh.y, lh.x - rh.x) * 180 / Math.PI));
+      angles.push({ label: "hip-rot", deg: hr, x: (lh.x + rh.x) / 2, y: lh.y });
     }
   }
-
   if (stroke === "Breaststroke") {
-    add("L-elbow", LM.LEFT_SHOULDER,  LM.LEFT_ELBOW,  LM.LEFT_WRIST);
-    add("R-elbow", LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST);
-    add("L-knee",  LM.LEFT_HIP,       LM.LEFT_KNEE,   LM.LEFT_ANKLE);
-    add("R-knee",  LM.RIGHT_HIP,      LM.RIGHT_KNEE,  LM.RIGHT_ANKLE);
+    add("L-elbow", LM.LEFT_SHOULDER, LM.LEFT_ELBOW,  LM.LEFT_WRIST);
+    add("R-elbow", LM.RIGHT_SHOULDER,LM.RIGHT_ELBOW, LM.RIGHT_WRIST);
+    add("L-knee",  LM.LEFT_HIP,      LM.LEFT_KNEE,   LM.LEFT_ANKLE);
+    add("R-knee",  LM.RIGHT_HIP,     LM.RIGHT_KNEE,  LM.RIGHT_ANKLE);
   }
-
   if (stroke === "Butterfly") {
-    add("L-elbow", LM.LEFT_SHOULDER,  LM.LEFT_ELBOW,  LM.LEFT_WRIST);
-    add("R-elbow", LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST);
-    add("L-hip",   LM.LEFT_SHOULDER,  LM.LEFT_HIP,    LM.LEFT_KNEE);
-    add("R-hip",   LM.RIGHT_SHOULDER, LM.RIGHT_HIP,   LM.RIGHT_KNEE);
+    add("L-elbow", LM.LEFT_SHOULDER, LM.LEFT_ELBOW,   LM.LEFT_WRIST);
+    add("R-elbow", LM.RIGHT_SHOULDER,LM.RIGHT_ELBOW,  LM.RIGHT_WRIST);
+    add("L-hip",   LM.LEFT_SHOULDER, LM.LEFT_HIP,     LM.LEFT_KNEE);
+    add("R-hip",   LM.RIGHT_SHOULDER,LM.RIGHT_HIP,    LM.RIGHT_KNEE);
   }
-
   return angles;
 }
 
-// Draw skeleton + angle labels onto a canvas
-function drawOverlay(ctx, landmarks, W, H, stroke, accentColor = "#E63946") {
+// Draw skeleton and angle labels on a canvas
+export function drawPoseOverlay(ctx, landmarks, W, H, stroke) {
   if (!landmarks || landmarks.length === 0) return [];
 
-  const lm = landmarks;
-  const px = (l) => ({ x: l.x * W, y: l.y * H });
-
-  // Draw skeleton lines
-  ctx.strokeStyle = "rgba(255,255,255,0.6)";
-  ctx.lineWidth = 1.5;
+  // Skeleton lines
+  ctx.strokeStyle = "rgba(255,255,255,0.65)";
+  ctx.lineWidth = 2;
   SKELETON.forEach(([a, b]) => {
-    const la = lm[a], lb = lm[b];
+    const la = landmarks[a], lb = landmarks[b];
     if (!la || !lb || la.visibility < 0.3 || lb.visibility < 0.3) return;
-    const pa = px(la), pb = px(lb);
     ctx.beginPath();
-    ctx.moveTo(pa.x, pa.y);
-    ctx.lineTo(pb.x, pb.y);
+    ctx.moveTo(la.x * W, la.y * H);
+    ctx.lineTo(lb.x * W, lb.y * H);
     ctx.stroke();
   });
 
-  // Draw joint dots
+  // Joint dots
   Object.values(LM).forEach(idx => {
-    const l = lm[idx];
+    const l = landmarks[idx];
     if (!l || l.visibility < 0.3) return;
-    const p = px(l);
-    ctx.fillStyle = l.visibility > 0.7 ? "#FFFFFF" : "rgba(255,255,255,0.4)";
+    ctx.fillStyle = l.visibility > 0.7 ? "#FFFFFF" : "rgba(255,255,255,0.45)";
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.arc(l.x * W, l.y * H, 4, 0, Math.PI * 2);
     ctx.fill();
   });
 
-  // Calculate and draw angle labels
-  const angles = getStrokeAngles(stroke, lm);
+  // Angle labels
+  const angles = getStrokeAngles(stroke, landmarks);
+  ctx.font = "bold 11px 'Helvetica Neue', sans-serif";
   angles.forEach(({ label, deg, x, y }) => {
-    const px_ = x * W;
-    const py_ = y * H - 14;
-    const text = `${label} ${deg}deg`;
-
-    // Background pill
-    ctx.font = "bold 9px 'Helvetica Neue', sans-serif";
+    const px = x * W, py = y * H - 16;
+    const text = `${label} ${deg}`;
     const tw = ctx.measureText(text).width;
-    ctx.fillStyle = accentColor;
-    ctx.fillRect(px_ - tw / 2 - 4, py_ - 10, tw + 8, 14);
-
-    // Label text
+    ctx.fillStyle = "#E63946";
+    ctx.fillRect(px - tw / 2 - 5, py - 11, tw + 10, 15);
     ctx.fillStyle = "#FFFFFF";
     ctx.textAlign = "center";
-    ctx.fillText(text, px_, py_);
+    ctx.fillText(text, px, py);
     ctx.textAlign = "left";
   });
 
   return angles;
 }
 
-// --- Lazy-load MediaPipe and create detector ---------------------------------
+// --- Lazy-load MediaPipe detector --------------------------------------------
 let detector = null;
 let loadPromise = null;
 
@@ -168,17 +152,19 @@ export async function initPoseDetector() {
   if (loadPromise) return loadPromise;
 
   loadPromise = (async () => {
-    // Load MediaPipe Tasks Vision from CDN
-    const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.js";
-    script.crossOrigin = "anonymous";
-    await new Promise((res, rej) => {
-      script.onload = res;
-      script.onerror = () => rej(new Error("Failed to load MediaPipe CDN"));
-      document.head.appendChild(script);
-    });
+    // Load MediaPipe Tasks Vision bundle from CDN
+    if (!window.PoseLandmarker) {
+      await new Promise((res, rej) => {
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.js";
+        s.crossOrigin = "anonymous";
+        s.onload = res;
+        s.onerror = () => rej(new Error("Failed to load MediaPipe CDN"));
+        document.head.appendChild(s);
+      });
+    }
 
-    const { PoseLandmarker, FilesetResolver } = window.mediapipeTasks || window;
+    const { PoseLandmarker, FilesetResolver } = window;
     const vision = await FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
     );
@@ -188,7 +174,7 @@ export async function initPoseDetector() {
         delegate: "GPU",
       },
       runningMode: "IMAGE",
-      numPoses: 1,
+      numPoses: 3,  // detect up to 3 poses so we can pick the right swimmer
     });
     return detector;
   })();
@@ -196,27 +182,26 @@ export async function initPoseDetector() {
   return loadPromise;
 }
 
-// --- Run pose on a canvas and return annotated canvas + angle summary --------
-export async function annotateFrame(canvas, stroke) {
-  let det;
+// --- Detect poses on a canvas, return all results ----------------------------
+export async function detectPoses(canvas) {
   try {
-    det = await initPoseDetector();
-  } catch {
-    // MediaPipe unavailable (e.g. no CDN) -- return canvas unannotated
-    return { canvas, angles: [], error: "MediaPipe unavailable" };
-  }
-
-  try {
+    const det = await initPoseDetector();
     const result = det.detect(canvas);
-    const landmarks = result?.landmarks?.[0];
-    if (!landmarks || landmarks.length === 0) {
-      return { canvas, angles: [], error: "No pose detected" };
-    }
-
-    const ctx = canvas.getContext("2d");
-    const angles = drawOverlay(ctx, landmarks, canvas.width, canvas.height, stroke);
-    return { canvas, angles, error: null };
-  } catch (e) {
-    return { canvas, angles: [], error: e.message };
+    return result?.landmarks || [];
+  } catch {
+    return [];
   }
+}
+
+// --- Pick the pose closest to a target centre (0-1 normalised) ---------------
+export function closestPose(poses, targetCx, targetCy, W, H) {
+  if (!poses || poses.length === 0) return null;
+  let best = null, bestDist = Infinity;
+  poses.forEach(landmarks => {
+    const bb = getPoseBoundingBox(landmarks, W, H);
+    if (!bb) return;
+    const dist = Math.hypot(bb.cx - targetCx, bb.cy - targetCy);
+    if (dist < bestDist) { bestDist = dist; best = { landmarks, bb }; }
+  });
+  return best;
 }
