@@ -193,8 +193,68 @@ function UploadStep({ stroke, videoFile, error, onStrokeChange, onFileChange, on
   );
 }
 
+// --- Annotated frame viewer ---------------------------------------------------
+function FrameViewer({ frames }) {
+  const [enlarged, setEnlarged] = useState(null);
+  if (!frames || frames.length === 0) return null;
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <Label style={{ marginBottom: 10, padding: "0 24px" }}>
+        Frames sent to AI ({frames.length})
+      </Label>
+
+      {/* Thumbnail strip */}
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "0 24px 8px", scrollbarWidth: "none" }}>
+        {frames.map((b64, i) => (
+          <img
+            key={i}
+            src={`data:image/jpeg;base64,${b64}`}
+            onClick={() => setEnlarged(i)}
+            style={{ height: 60, width: "auto", flexShrink: 0, border: `1px solid ${T.rule}`, cursor: "pointer", objectFit: "cover" }}
+            alt={`Frame ${i + 1}`}
+          />
+        ))}
+      </div>
+      <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted, padding: "0 24px" }}>
+        Tap any frame to enlarge. Skeleton overlay = detected pose. Angle labels in red.
+      </div>
+
+      {/* Enlarged modal */}
+      {enlarged !== null && (
+        <div
+          onClick={() => setEnlarged(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 200, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <img
+            src={`data:image/jpeg;base64,${frames[enlarged]}`}
+            style={{ maxWidth: "100%", maxHeight: "75vh", objectFit: "contain" }}
+            alt={`Frame ${enlarged + 1}`}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 24, marginTop: 16 }}>
+            <button onClick={(e) => { e.stopPropagation(); setEnlarged(i => Math.max(0, i - 1)); }}
+              style={{ background: "none", border: `1px solid rgba(255,255,255,0.3)`, color: "#fff", padding: "8px 16px", fontSize: 12, cursor: "pointer" }}>
+              &larr;
+            </button>
+            <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: "rgba(255,255,255,0.6)" }}>
+              {enlarged + 1} / {frames.length}
+            </span>
+            <button onClick={(e) => { e.stopPropagation(); setEnlarged(i => Math.min(frames.length - 1, i + 1)); }}
+              style={{ background: "none", border: `1px solid rgba(255,255,255,0.3)`, color: "#fff", padding: "8px 16px", fontSize: 12, cursor: "pointer" }}>
+              &rarr;
+            </button>
+          </div>
+          <button onClick={() => setEnlarged(null)}
+            style={{ marginTop: 12, background: "none", border: "none", color: "rgba(255,255,255,0.4)", fontSize: 11, cursor: "pointer", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", letterSpacing: "0.08em" }}>
+            CLOSE
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // --- AnalyzeView --------------------------------------------------------------
-export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, setStep, result, error, note, setNote, extractProgress, frameCount, setFrameCount, onLaneConfirm, onPrivacyConfirm, onSave, profile, pbs }) {
+export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, setStep, result, error, note, setNote, extractProgress, frameCount, setFrameCount, analysedFrames, onLaneConfirm, onPrivacyConfirm, onSave, profile, pbs }) {
   const sc = T.strokes[stroke];
 
   if (step === "select") {
@@ -268,8 +328,11 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
       />
 
       {step === "result" && result && (
-        <div style={{ padding: "0 24px" }}>
-          <ResultPanel result={result} stroke={stroke} note={note} onNoteChange={setNote} onSave={onSave} />
+        <div>
+          <FrameViewer frames={analysedFrames} />
+          <div style={{ padding: "0 24px" }}>
+            <ResultPanel result={result} stroke={stroke} note={note} onNoteChange={setNote} onSave={onSave} />
+          </div>
         </div>
       )}
     </div>
