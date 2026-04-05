@@ -138,16 +138,31 @@ export default function App() {
     setShowProfile(false); setView("targets");
   };
 
-  // -- Browser back button ---------------------------------------------------
   useEffect(() => {
     if (showProfile) window.history.pushState({ showProfile: true }, "");
   }, [showProfile]);
 
+  // -- Browser back button for all sub-steps --------------------------------
   useEffect(() => {
-    const onPop = () => { if (showProfile) setShowProfile(false); };
+    const subSteps = ["select", "privacy", "preview", "processing", "review", "analyzing", "result"];
+    if (view === "analyze" && subSteps.includes(step) && step !== "upload") {
+      window.history.pushState({ analyzeStep: step }, "");
+    }
+  }, [step, view]);
+
+  useEffect(() => {
+    const onPop = () => {
+      if (showProfile) { setShowProfile(false); return; }
+      if (view === "analyze") {
+        const stepOrder = ["upload", "select", "privacy", "preview", "processing", "review", "analyzing", "result"];
+        const idx = stepOrder.indexOf(step);
+        if (idx > 0) setStep(stepOrder[idx - 1]);
+        else setView("home");
+      }
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [showProfile]);
+  }, [step, view, showProfile]);
 
   // -- Navigation ------------------------------------------------------------
   const handleNavigate = (id) => {
