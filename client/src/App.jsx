@@ -74,7 +74,9 @@ export default function App() {
     setError(null);
     try {
       const frames = await extractTrackedFrames(
-        videoFile, crop, zones, frameCount, stroke,
+        videoFile, crop, zones,
+        0.5,   // 1 frame every 0.5s -- review screen handles count selection
+        stroke,
         (done, total, phase) => setProcessProgress({ done, total, phase })
       );
       setProcessedFrames(frames);
@@ -195,7 +197,6 @@ export default function App() {
           result={result} error={error}
           note={note} setNote={setNote}
           processProgress={processProgress}
-          frameCount={frameCount} setFrameCount={setFrameCount}
           processedFrames={processedFrames}
           approvedFrames={approvedFrames}
           onLaneConfirm={handleLaneConfirm}
