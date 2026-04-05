@@ -32,302 +32,271 @@ function ema(prev, next, alpha = 0.4) {
   return prev === null ? next : prev + alpha * (next - prev);
 }
 
-// --- Draw frame to output canvas with aspect-ratio letterboxing --------------
-// Fills 640x360 with black then draws the crop centred maintaining AR
-function drawCropLetterboxed(outCtx, srcCanvas, cropBox, outW, outH) {
-  outCtx.fillStyle = "#000";
+// --- Letterbox-preserving draw -----------------------------------------------
+function drawLetterboxed(outCtx, srcCanvas, sx, sy, sw, sh, outW, outH) {
+  outCtx.fillStyle = "#111";
   outCtx.fillRect(0, 0, outW, outH);
-
-  const { x, y, w, h } = cropBox;
-  if (w < 10 || h < 10) {
-    // Fallback: draw full frame scaled
+  if (sw < 4 || sh < 4) {
     outCtx.drawImage(srcCanvas, 0, 0, outW, outH);
-    return;
+    return { dx: 0, dy: 0, dw: outW, dh: outH };
   }
-
-  const srcAR  = w / h;
-  const outAR  = outW / outH;
+  const srcAR = sw / sh, outAR = outW / outH;
   let dw, dh, dx, dy;
   if (srcAR > outAR) {
-    // Crop is wider than output -- fit width, letterbox top/bottom
-    dw = outW;
-    dh = Math.round(outW / srcAR);
-    dx = 0;
-    dy = Math.round((outH - dh) / 2);
+    dw = outW; dh = Math.round(outW / srcAR); dx = 0; dy = Math.round((outH - dh) / 2);
   } else {
-    // Crop is taller than output -- fit height, pillarbox left/right
-    dh = outH;
-    dw = Math.round(outH * srcAR);
-    dy = 0;
-    dx = Math.round((outW - dw) / 2);
+    dh = outH; dw = Math.round(outH * srcAR); dx = Math.round((outW - dw) / 2); dy = 0;
   }
-  outCtx.drawImage(srcCanvas, x, y, w, h, dx, dy, dw, dh);
-  return { dx, dy, dw, dh }; // return so we can remap landmarks
+  outCtx.drawImage(srcCanvas, sx, sy, sw, sh, dx, dy, dw, dh);
+  return { dx, dy, dw, dh };
+}
+
+// --- Seek video to a timestamp with timeout ----------------------------------
+function seekTo(video, t) {
+  return new Promise(res => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; res(); } };
+    video.onseeked = finish;
+    video.currentTime = t;
+    setTimeout(finish, 2500); // fallback if onseeked never fires
+  });
 }
 
 // --- Extract ALL frames with tracking + kinematics ---------------------------
-// Extracts one frame every ~intervalSecs across the whole video.
-// Returns all tracked frames -- FrameReview handles count selection.
-// onProgress: (done, total, phase)
+// Uses 640x360 capture -- high enough for analysis, safe on mobile memory
 export async function extractTrackedFrames(
   videoFile, initialCrop, redactZones, intervalSecs = 0.5, stroke, onProgress
 ) {
-  // Load pose module
-  let poseModule = null;
-  try {
-    if (onProgress) onProgress(0, 1, "Loading AI pose detector...");
-    poseModule = await import("./pose.js");
-    await poseModule.initPoseDetector();
-    console.log("[video] pose detector loaded");
-  } catch (e) {
-    console.warn("[video] pose unavailable:", e.message);
-  }
-
   const OUT_W = 640, OUT_H = 360;
-  const CAP_W = 1280, CAP_H = 720;
+
+  // Start pose loading in background -- don't block frame extraction
+  let poseReady = false;
+  let poseModule = null;
+  const poseLoadPromise = import("./pose.js")
+    .then(async pm => {
+      poseModule = pm;
+      await pm.initPoseDetector();
+      poseReady = true;
+      console.log("[video] pose ready");
+    })
+    .catch(e => console.warn("[video] pose unavailable:", e.message));
+
+  if (onProgress) onProgress(0, 1, "Loading video...");
+
+  // Load video metadata
+  const { duration } = await new Promise((res, rej) => {
+    const v = document.createElement("video");
+    v.muted = true; v.playsInline = true; v.preload = "metadata";
+    v.onerror = () => rej(new Error("Video failed to load"));
+    v.onloadedmetadata = () => res({ duration: v.duration });
+    v.src = URL.createObjectURL(videoFile);
+    v.load();
+    setTimeout(() => rej(new Error("Video load timeout")), 15000);
+  });
+
+  if (!duration || duration < 0.3) throw new Error("Video too short");
+
+  // Build timestamp list
+  const maxFrames = 80;
+  const step = Math.max(intervalSecs, duration / maxFrames);
+  const times = [];
+  for (let t = 0.3; t < duration - 0.1; t += step) {
+    times.push(parseFloat(t.toFixed(2)));
+  }
+  if (!times.length || times[0] > 0.5) times.unshift(0.3);
+  const lastT = parseFloat((duration - 0.3).toFixed(2));
+  if (times[times.length - 1] < lastT) times.push(lastT);
+
+  console.log(`[video] ${times.length} frames over ${duration.toFixed(1)}s`);
+  if (onProgress) onProgress(0, times.length, `Extracting ${times.length} frames...`);
+
+  // Reuse a single video element for all seeks
+  const video = document.createElement("video");
+  const objUrl = URL.createObjectURL(videoFile);
+  video.src = objUrl;
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = "auto";
+
+  await new Promise((res, rej) => {
+    video.onloadedmetadata = res;
+    video.onerror = () => rej(new Error("Video element failed"));
+    video.load();
+    setTimeout(res, 10000); // fallback
+  });
+
+  // Tracking state
+  let targetCx = (initialCrop?.x || 0) + (initialCrop?.w || 0.5) / 2;
+  let targetCy = (initialCrop?.y || 0) + (initialCrop?.h || 0.5) / 2;
+  let smoothCx = null, smoothCy = null;
+  let smoothW  = null, smoothH  = null;
+  let lastGoodCrop = null;
+  let lostCount = 0;
 
   const frames = [];
 
-  return new Promise((resolve, reject) => {
-    const video = document.createElement("video");
-    const objUrl = URL.createObjectURL(videoFile);
-    video.src = objUrl;
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "auto";
+  // Reuse a single capture canvas -- avoids GC pressure
+  const cap = document.createElement("canvas");
+  cap.width = OUT_W; cap.height = OUT_H;
+  const capCtx = cap.getContext("2d");
 
-    video.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error("Video failed to load")); };
+  for (let idx = 0; idx < times.length; idx++) {
+    const t = times[idx];
 
-    video.onloadedmetadata = async () => {
-      const duration = video.duration;
-      if (!duration || duration < 0.5) {
-        URL.revokeObjectURL(objUrl);
-        reject(new Error("Video too short or invalid"));
-        return;
-      }
+    try {
+      await seekTo(video, t);
 
-      // Build timestamp list -- every intervalSecs, capped at 80 frames
-      const maxFrames = 80;
-      const step = Math.max(intervalSecs, duration / maxFrames);
-      const times = [];
-      for (let t = 0.3; t < duration - 0.1; t += step) {
-        times.push(parseFloat(t.toFixed(2)));
-      }
-      if (!times.length || times[0] > 0.5) times.unshift(0.3);
-      const lastT = parseFloat((duration - 0.3).toFixed(2));
-      if (times[times.length - 1] < lastT) times.push(lastT);
+      // 1. Capture frame at output resolution (not 1280x720 -- too much memory)
+      capCtx.drawImage(video, 0, 0, OUT_W, OUT_H);
 
-      console.log(`[video] extracting ${times.length} frames over ${duration.toFixed(1)}s`);
-      if (onProgress) onProgress(0, times.length, `Extracting ${times.length} frames...`);
+      // 2. Face blur
+      await tryAutoBlur(cap);
 
-      // Tracking state in normalised 0-1 space
-      let targetCx = (initialCrop?.x || 0) + (initialCrop?.w || 0.5) / 2;
-      let targetCy = (initialCrop?.y || 0) + (initialCrop?.h || 0.5) / 2;
-      let smoothCx = null, smoothCy = null;
-      let smoothW  = null, smoothH  = null;
-      let lastGoodCrop = null;
-      let consecutiveLost = 0;
+      // 3. Apply manual redact zones
+      (redactZones || []).forEach(z =>
+        pixelate(capCtx,
+          (z.x / z.cw) * OUT_W, (z.y / z.ch) * OUT_H,
+          (z.w / z.cw) * OUT_W, (z.h / z.ch) * OUT_H, 14)
+      );
 
-      for (let idx = 0; idx < times.length; idx++) {
-        const t = times[idx];
+      // 4. Pose detection + tracking (only if pose module is ready)
+      let tracked  = false;
+      let cropBox  = null;
+      let landmarks = null;
 
-        // Seek with timeout fallback -- onseeked can silently fail on mobile
-        await new Promise(res => {
-          let done = false;
-          const finish = () => { if (!done) { done = true; res(); } };
-          video.onseeked = finish;
-          video.currentTime = t;
-          // Fallback: if onseeked hasn't fired in 3s, continue anyway
-          setTimeout(finish, 3000);
-        });
-
+      if (poseReady && poseModule) {
         try {
-          // 1. Capture full frame
-          const full = document.createElement("canvas");
-          full.width = CAP_W; full.height = CAP_H;
-          full.getContext("2d").drawImage(video, 0, 0, CAP_W, CAP_H);
+          const poses = await poseModule.detectPoses(cap);
+          const match = poseModule.closestPose(poses, targetCx, targetCy);
 
-          // 2. Apply face blur to full frame
-          await tryAutoBlur(full);
-          const fCtx = full.getContext("2d");
-          (redactZones || []).forEach(z =>
-            pixelate(fCtx,
-              (z.x / z.cw) * CAP_W, (z.y / z.ch) * CAP_H,
-              (z.w / z.cw) * CAP_W, (z.h / z.ch) * CAP_H, 16)
-          );
+          if (match && match.bb.confidence > 0.3) {
+            const bb = match.bb;
+            lostCount = 0;
 
-          // 3. Pose detection on scaled-down canvas for speed
-          let tracked  = false;
-          let cropBox  = null;
-          let landmarks = null;
-
-          if (poseModule) {
-            const det = document.createElement("canvas");
-            det.width = 640; det.height = 360;
-            det.getContext("2d").drawImage(full, 0, 0, 640, 360);
-
-            const poses = await poseModule.detectPoses(det);
-            const match = poseModule.closestPose(poses, targetCx, targetCy);
-
-            if (match && match.bb.confidence > 0.35) {
-              const bb = match.bb;
-              consecutiveLost = 0;
-
-              // Only update smooth position if confidence is high enough
-              // -- prevents drifting toward wrong person
-              if (bb.confidence > 0.5) {
-                smoothCx = ema(smoothCx, bb.cx, 0.35);
-                smoothCy = ema(smoothCy, bb.cy, 0.35);
-                // Size: grow quickly, shrink slowly -- prevents clipping swimmer
-                const newW = Math.min(bb.w * 1.2, 0.9); // 20% padding, cap at 90% frame
-                const newH = Math.min(bb.h * 1.3, 0.9);
-                smoothW = smoothW === null ? newW : (newW > smoothW ? ema(smoothW, newW, 0.5) : ema(smoothW, newW, 0.1));
-                smoothH = smoothH === null ? newH : (newH > smoothH ? ema(smoothH, newH, 0.5) : ema(smoothH, newH, 0.1));
-                targetCx = smoothCx;
-                targetCy = smoothCy;
-              }
-
-              // Crop box in pixel coords on full canvas
-              const halfW = (smoothW / 2) * CAP_W;
-              const halfH = (smoothH / 2) * CAP_H;
-              cropBox = {
-                x: Math.max(0, Math.round(smoothCx * CAP_W - halfW)),
-                y: Math.max(0, Math.round(smoothCy * CAP_H - halfH)),
-                w: Math.min(CAP_W, Math.round(smoothW * CAP_W)),
-                h: Math.min(CAP_H, Math.round(smoothH * CAP_H)),
-              };
-              // Clamp to canvas bounds
-              cropBox.w = Math.min(cropBox.w, CAP_W - cropBox.x);
-              cropBox.h = Math.min(cropBox.h, CAP_H - cropBox.y);
-
-              lastGoodCrop = { ...cropBox };
-              tracked = true;
-
-              // Remap landmarks to 640x360 detection space -> normalised
-              landmarks = match.landmarks;
-            } else {
-              consecutiveLost++;
+            // Only update smooth position with confident detections
+            if (bb.confidence > 0.45) {
+              smoothCx = ema(smoothCx, bb.cx, 0.35);
+              smoothCy = ema(smoothCy, bb.cy, 0.35);
+              const nw = Math.min(bb.w * 1.25, 0.95);
+              const nh = Math.min(bb.h * 1.35, 0.95);
+              smoothW  = smoothW  === null ? nw : (nw > smoothW  ? ema(smoothW, nw, 0.5)  : ema(smoothW, nw, 0.1));
+              smoothH  = smoothH  === null ? nh : (nh > smoothH  ? ema(smoothH, nh, 0.5)  : ema(smoothH, nh, 0.1));
+              targetCx = smoothCx;
+              targetCy = smoothCy;
             }
-          }
 
-          // 4. Fallback crop
-          if (!cropBox) {
-            if (lastGoodCrop && consecutiveLost < 8) {
-              cropBox = lastGoodCrop; // use last known good position
-            } else if (initialCrop) {
-              cropBox = {
-                x: Math.round(initialCrop.x * CAP_W),
-                y: Math.round(initialCrop.y * CAP_H),
-                w: Math.round(initialCrop.w * CAP_W),
-                h: Math.round(initialCrop.h * CAP_H),
-              };
-            }
-          }
-
-          // 5. Create output canvas with letterboxing
-          const out = document.createElement("canvas");
-          out.width = OUT_W; out.height = OUT_H;
-          const oCtx = out.getContext("2d");
-          const mapping = drawCropLetterboxed(oCtx, full, cropBox || { x: 0, y: 0, w: CAP_W, h: CAP_H }, OUT_W, OUT_H);
-
-          // 6. Draw kinematics overlay on output canvas
-          let angles = [];
-          if (poseModule && tracked && landmarks && mapping) {
-            // Remap normalised landmarks to output canvas coords
-            // landmarks are normalised to the 640x360 detection canvas
-            // which covers the full 1280x720 frame
-            // We need to remap them to the output crop space
-            const remapped = landmarks.map(lm => {
-              if (!lm) return lm;
-              // lm.x/y is normalised to full frame
-              // crop is in CAP_W/CAP_H pixels
-              const px = lm.x * CAP_W; // pixel position in full frame
-              const py = lm.y * CAP_H;
-              // Position relative to crop
-              const relX = (px - cropBox.x) / cropBox.w;
-              const relY = (py - cropBox.y) / cropBox.h;
-              // Map to output canvas via letterbox mapping
-              const outX = (mapping.dx + relX * mapping.dw) / OUT_W;
-              const outY = (mapping.dy + relY * mapping.dh) / OUT_H;
-              return { ...lm, x: outX, y: outY };
-            });
-            angles = poseModule.drawPoseOverlay(oCtx, remapped, OUT_W, OUT_H, stroke);
-          }
-
-          // 7. Overlay: timestamp + tracking status
-          oCtx.fillStyle = "rgba(0,0,0,0.6)";
-          oCtx.fillRect(0, OUT_H - 24, 110, 24);
-          oCtx.fillStyle = "#fff";
-          oCtx.font = "10px sans-serif";
-          oCtx.fillText(`#${idx + 1}  ${t.toFixed(1)}s`, 6, OUT_H - 8);
-          if (tracked) {
-            oCtx.fillStyle = "#007A5E";
-            oCtx.fillRect(OUT_W - 64, OUT_H - 24, 64, 24);
-            oCtx.fillStyle = "#fff";
-            oCtx.fillText("tracked", OUT_W - 60, OUT_H - 8);
+            cropBox = {
+              x: Math.max(0, Math.round((smoothCx - smoothW/2) * OUT_W)),
+              y: Math.max(0, Math.round((smoothCy - smoothH/2) * OUT_H)),
+              w: Math.min(OUT_W, Math.round(smoothW * OUT_W)),
+              h: Math.min(OUT_H, Math.round(smoothH * OUT_H)),
+            };
+            cropBox.w = Math.min(cropBox.w, OUT_W - cropBox.x);
+            cropBox.h = Math.min(cropBox.h, OUT_H - cropBox.y);
+            lastGoodCrop = { ...cropBox };
+            landmarks = match.landmarks;
+            tracked = true;
           } else {
-            oCtx.fillStyle = "#C4610A";
-            oCtx.fillRect(OUT_W - 48, OUT_H - 24, 48, 24);
-            oCtx.fillStyle = "#fff";
-            oCtx.fillText("no pose", OUT_W - 44, OUT_H - 8);
+            lostCount++;
           }
-
-          frames.push({
-            data:       out.toDataURL("image/jpeg", 0.88).split(",")[1],
-            frameIndex: idx,
-            timestamp:  t,
-            tracked,
-            angles,
-            approved:   true,
-          });
-
-        } catch (e) {
-          console.error(`[video] frame ${idx} error:`, e.message);
-          frames.push({ data: null, frameIndex: idx, timestamp: t, tracked: false, angles: [], approved: false });
+        } catch (poseErr) {
+          console.warn("[video] pose error frame", idx, poseErr.message);
         }
-
-        // Update progress after frame is complete
-        if (onProgress) onProgress(idx + 1, times.length, `Frame ${idx + 1} / ${times.length}${tracked ? " (tracked)" : ""}`);
       }
 
-      URL.revokeObjectURL(objUrl);
-      if (onProgress) onProgress(times.length, times.length, "Done");
-      console.log(`[video] extracted ${frames.length} frames, ${frames.filter(f=>f.tracked).length} tracked`);
-      resolve(frames);
-    };
+      // Fallback crop
+      if (!cropBox) {
+        cropBox = lostCount < 10 && lastGoodCrop
+          ? lastGoodCrop
+          : initialCrop
+            ? { x: Math.round(initialCrop.x * OUT_W), y: Math.round(initialCrop.y * OUT_H), w: Math.round(initialCrop.w * OUT_W), h: Math.round(initialCrop.h * OUT_H) }
+            : { x: 0, y: 0, w: OUT_W, h: OUT_H };
+      }
 
-    video.load();
-  });
+      // 5. Create output frame with letterboxed crop
+      const out = document.createElement("canvas");
+      out.width = OUT_W; out.height = OUT_H;
+      const oCtx = out.getContext("2d");
+      const mapping = drawLetterboxed(oCtx, cap, cropBox.x, cropBox.y, cropBox.w, cropBox.h, OUT_W, OUT_H);
+
+      // 6. Kinematics overlay
+      let angles = [];
+      if (poseReady && poseModule && tracked && landmarks && mapping) {
+        try {
+          // Remap landmarks from full-frame normalised to crop space
+          const remapped = landmarks.map(lm => {
+            if (!lm) return lm;
+            const relX = (lm.x * OUT_W - cropBox.x) / cropBox.w;
+            const relY = (lm.y * OUT_H - cropBox.y) / cropBox.h;
+            return {
+              ...lm,
+              x: (mapping.dx + relX * mapping.dw) / OUT_W,
+              y: (mapping.dy + relY * mapping.dh) / OUT_H,
+            };
+          });
+          angles = poseModule.drawPoseOverlay(oCtx, remapped, OUT_W, OUT_H, stroke);
+        } catch (e) {
+          console.warn("[video] overlay error:", e.message);
+        }
+      }
+
+      // 7. Status badge
+      oCtx.fillStyle = "rgba(0,0,0,0.65)";
+      oCtx.fillRect(0, OUT_H - 22, 100, 22);
+      oCtx.fillStyle = "#fff";
+      oCtx.font = "10px sans-serif";
+      oCtx.fillText(`${idx+1}/${times.length}  ${t.toFixed(1)}s`, 5, OUT_H - 7);
+      if (tracked) {
+        oCtx.fillStyle = "#007A5E";
+        oCtx.fillRect(OUT_W - 56, OUT_H - 22, 56, 22);
+        oCtx.fillStyle = "#fff";
+        oCtx.fillText("tracked", OUT_W - 52, OUT_H - 7);
+      }
+
+      frames.push({
+        data:       out.toDataURL("image/jpeg", 0.85).split(",")[1],
+        frameIndex: idx, timestamp: t, tracked, angles, approved: true,
+      });
+
+    } catch (e) {
+      console.error(`[video] frame ${idx} failed:`, e.message);
+      frames.push({ data: null, frameIndex: idx, timestamp: t, tracked: false, angles: [], approved: false });
+    }
+
+    if (onProgress) onProgress(idx + 1, times.length, `Frame ${idx + 1} / ${times.length}`);
+  }
+
+  URL.revokeObjectURL(objUrl);
+  const tracked = frames.filter(f => f.tracked).length;
+  console.log(`[video] done: ${frames.length} frames, ${tracked} tracked`);
+  return frames;
 }
 
 // --- Smart lap-aware timestamps (for timing analysis) ------------------------
 export function lapAwareTimestamps(videoDurationSecs, recentPbSecs, event, poolLength, framesPerZone = 5, windowSecs = 1.0) {
-  const dist    = parseInt(event) || 100;
-  const laps    = dist / poolLength;
+  const dist = parseInt(event) || 100, laps = dist / poolLength;
   const lapTime = recentPbSecs / laps;
   const wallTimes = [];
   for (let lap = 1; lap <= laps; lap++) {
-    const raw = lap < laps / 2 ? lapTime * lap * 1.02 : lapTime * lap * 0.98;
-    wallTimes.push(Math.min(raw, videoDurationSecs - 0.1));
+    wallTimes.push(Math.min(lap < laps/2 ? lapTime*lap*1.02 : lapTime*lap*0.98, videoDurationSecs - 0.1));
   }
-  const timestamps = new Set();
+  const ts = new Set();
   wallTimes.forEach(wt => {
     for (let i = 0; i < framesPerZone; i++) {
-      const offset = -windowSecs + (i / (framesPerZone - 1)) * windowSecs * 2;
-      timestamps.add(parseFloat(Math.max(0.1, Math.min(wt + offset, videoDurationSecs - 0.1)).toFixed(2)));
+      const o = -windowSecs + (i/(framesPerZone-1))*windowSecs*2;
+      ts.add(parseFloat(Math.max(0.1, Math.min(wt+o, videoDurationSecs-0.1)).toFixed(2)));
     }
   });
-  [0.5, 1.0, 1.8].forEach(t => { if (t < videoDurationSecs) timestamps.add(t); });
-  [-0.5, -0.2].forEach(o => timestamps.add(parseFloat(Math.max(0.1, videoDurationSecs + o).toFixed(2))));
-  return [...timestamps].sort((a, b) => a - b);
+  [0.5, 1.0, 1.8].forEach(t => { if (t < videoDurationSecs) ts.add(t); });
+  [-0.5, -0.2].forEach(o => ts.add(parseFloat(Math.max(0.1, videoDurationSecs+o).toFixed(2))));
+  return [...ts].sort((a, b) => a - b);
 }
 
 // --- Extract frames at specific timestamps (for timing analysis) -------------
 export async function extractFramesAtTimes(videoFile, timestamps, redactZones = [], crop = null, onProgress = null) {
   const count = timestamps.length;
-  const W = count <= 10 ? 480 : 320;
-  const H = count <= 10 ? 270 : 180;
-  return new Promise((resolve) => {
+  const W = count <= 10 ? 480 : 320, H = count <= 10 ? 270 : 180;
+  return new Promise(resolve => {
     const video = document.createElement("video");
     video.src = URL.createObjectURL(videoFile);
     const frames = [];
@@ -337,34 +306,22 @@ export async function extractFramesAtTimes(videoFile, timestamps, redactZones = 
         if (idx >= timestamps.length) { URL.revokeObjectURL(video.src); resolve(frames); return; }
         video.currentTime = timestamps[idx];
         video.onseeked = async () => {
-          const full = document.createElement("canvas");
-          full.width = W; full.height = H;
+          const full = document.createElement("canvas"); full.width = W; full.height = H;
           full.getContext("2d").drawImage(video, 0, 0, W, H);
           let c;
           if (crop) {
-            const sx = Math.round(crop.x*W), sy = Math.round(crop.y*H);
-            const sw = Math.round(crop.w*W), sh = Math.round(crop.h*H);
             c = document.createElement("canvas"); c.width = W; c.height = H;
-            c.getContext("2d").drawImage(full, sx, sy, sw, sh, 0, 0, W, H);
+            c.getContext("2d").drawImage(full, Math.round(crop.x*W), Math.round(crop.y*H), Math.round(crop.w*W), Math.round(crop.h*H), 0, 0, W, H);
           } else { c = full; }
           await tryAutoBlur(c);
           const ctx = c.getContext("2d");
           (redactZones||[]).forEach(z => pixelate(ctx, (z.x/z.cw)*W, (z.y/z.ch)*H, (z.w/z.cw)*W, (z.h/z.ch)*H, 16));
-          frames.push({ data: c.toDataURL("image/jpeg", 0.72).split(",")[1], time: timestamps[idx], zone: getZoneLabel(timestamps[idx], timestamps) });
-          idx++;
-          if (onProgress) onProgress(idx, timestamps.length);
-          next();
+          frames.push({ data: c.toDataURL("image/jpeg", 0.72).split(",")[1], time: timestamps[idx], zone: idx < 3 ? "start" : idx >= timestamps.length-2 ? "finish" : "wall-zone" });
+          idx++; if (onProgress) onProgress(idx, timestamps.length); next();
         };
       };
       next();
     };
     video.load();
   });
-}
-
-function getZoneLabel(t, allTimes) {
-  const max = Math.max(...allTimes);
-  if (t <= 2.0) return "start";
-  if (t >= max - 0.8) return "finish";
-  return "wall-zone";
 }
