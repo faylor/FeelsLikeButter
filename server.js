@@ -68,14 +68,14 @@ app.get("/api/swim-results", async (req, res) => {
 
     const html = await response.text();
     console.log(`[swim-results] got ${html.length} bytes`);
-    // Log a snippet so we can see the actual table structure
-    const tableStart = html.indexOf("<table");
-    console.log(`[swim-results] first table at char ${tableStart}`);
-    if (tableStart > -1) {
-      console.log(`[swim-results] table preview: ${html.slice(tableStart, tableStart + 400).replace(/\s+/g, " ")}`);
-    } else {
-      console.log(`[swim-results] no table found -- page preview: ${html.slice(0, 300).replace(/\s+/g, " ")}`);
-    }
+
+    // Results appear BEFORE the search form -- log first 1200 chars to see structure
+    const firstChunk = html.slice(0, 1200).replace(/\s+/g, " ");
+    console.log(`[swim-results] HTML start: ${firstChunk}`);
+
+    // Also log chars 14000-16500 (just before the search form) to catch results
+    const preForm = html.slice(14000, 16200).replace(/\s+/g, " ");
+    console.log(`[swim-results] pre-form HTML: ${preForm}`);
 
     const parsed = parseSwimResults(html);
     console.log(`[swim-results] name="${parsed.name}", ${Object.keys(parsed.times).length} times`);
