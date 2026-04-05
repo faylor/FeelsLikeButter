@@ -3,7 +3,7 @@ import { T } from "../tokens.js";
 import { pixelate, tryAutoBlur } from "../lib/video.js";
 import { Rule, Label, Btn } from "./ui.jsx";
 
-export function PrivacyEditor({ videoFile, onConfirm, onBack, accent }) {
+export function PrivacyEditor({ videoFile, onConfirm, onBack, accent, frameCount = 30 }) {
   const canvasRef = useRef();
   const [thumb, setThumb]         = useState(null);
   const [zones, setZones]         = useState([]);
@@ -83,7 +83,7 @@ export function PrivacyEditor({ videoFile, onConfirm, onBack, accent }) {
 
   if (!ready) return (
     <div style={{ padding: "40px 24px", textAlign: "center" }}>
-      <Label style={{ display: "block" }}>Loading preview…</Label>
+      <Label style={{ display: "block" }}>Loading preview</Label>
     </div>
   );
 
@@ -94,7 +94,7 @@ export function PrivacyEditor({ videoFile, onConfirm, onBack, accent }) {
 
       {/* Header */}
       <div style={{ padding: "32px 24px 0" }}>
-        <Label style={{ marginBottom: 6, color: T.red }}>Privacy</Label>
+        <Label style={{ marginBottom: 6, color: T.red }}>Step 2 of 3</Label>
         <div style={{ fontSize: 22, fontWeight: 300, letterSpacing: "-0.02em", color: T.black, marginBottom: 8 }}>
           Face Obscuring
         </div>
@@ -139,7 +139,7 @@ export function PrivacyEditor({ videoFile, onConfirm, onBack, accent }) {
 
       {/* Privacy summary */}
       <div style={{ margin: "0 24px 24px" }}>
-        {[["Sent to AI", "4 still frames, faces pixelated"], ["Stays on device", "Your original video, always"]].map(([k, v]) => (
+        {[["Sent to AI", `${frameCount} frames, faces pixelated`], ["Stays on device", "Your original video, always"]].map(([k, v]) => (
           <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 16, marginBottom: 10 }}>
             <Label style={{ paddingTop: 2, whiteSpace: "nowrap" }}>{k}</Label>
             <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.dark, textAlign: "right", lineHeight: 1.4 }}>{v}</span>
