@@ -23,7 +23,7 @@ function AnalyzingScreen({ extractProgress }) {
             <div style={{ width: `${pct}%`, height: "100%", background: T.dark, transition: "width 0.2s ease", borderRadius: 1 }} />
           </div>
           <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, margin: 0 }}>
-            {extractProgress.done} / {extractProgress.total} frames
+            {extractProgress.done} / {extractProgress.total} frames -- detecting pose
           </p>
         </div>
       ) : (
