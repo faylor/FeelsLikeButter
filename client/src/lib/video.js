@@ -133,26 +133,24 @@ export async function extractTrackedFrames(
               det.getContext("2d").drawImage(full, 0, 0, 640, 360);
 
               const poses = await detectPoses(det);
-              const match = closestPose(poses, targetCx, targetCy, 1, 1);
+              const match = closestPose(poses, targetCx, targetCy);
 
               if (match) {
-                const bb = match.bb;
+                const bb = match.bb; // bb is now normalised 0-1
                 tracked = true;
 
-                // Smooth the crop position with EMA to reduce jitter
+                // Smooth crop centre with EMA
                 smoothCx = ema(smoothCx, bb.cx, 0.4);
                 smoothCy = ema(smoothCy, bb.cy, 0.4);
-                // Keep size somewhat stable -- slow to shrink, fast to grow
-                const newW = bb.w / 640;
-                const newH = bb.h / 360;
+                const newW = bb.w;
+                const newH = bb.h;
                 smoothW = smoothW === null ? newW : Math.max(newW, ema(smoothW, newW, 0.3));
                 smoothH = smoothH === null ? newH : Math.max(newH, ema(smoothH, newH, 0.3));
 
-                // Update tracking target for next frame
                 targetCx = smoothCx;
                 targetCy = smoothCy;
 
-                // Crop box in full resolution
+                // Convert to pixel coords on full capture canvas
                 const halfW = (smoothW / 2) * CAP_W;
                 const halfH = (smoothH / 2) * CAP_H;
                 cropBox = {
