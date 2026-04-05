@@ -28,7 +28,7 @@ export default function App() {
 
   const accentColor = T.strokes[stroke].accent;
 
-  // ── Analysis flow ──────────────────────────────────────────────────────────
+  // -- Analysis flow ----------------------------------------------------------
   const handleLaneConfirm = (selectedCrop) => {
     setCrop(selectedCrop);
     setStep("privacy");
@@ -61,7 +61,7 @@ export default function App() {
     setStep("upload"); setView("history");
   };
 
-  // ── Profile save ───────────────────────────────────────────────────────────
+  // -- Profile save -----------------------------------------------------------
   const handleProfileSave = ({ profile: p, pbs: b }) => {
     setProfile(p); saveProfile(p);
     setPbs(b);     savePbs(b);
@@ -69,7 +69,7 @@ export default function App() {
     setView("targets");
   };
 
-  // ── Navigation ─────────────────────────────────────────────────────────────
+  // -- Navigation -------------------------------------------------------------
   const handleNavigate = (id) => {
     setView(id);
     if (id === "analyze" && step === "result") setStep("upload");
@@ -79,7 +79,7 @@ export default function App() {
     setStroke(s); setView("analyze");
   };
 
-  // ── Profile setup overlay ──────────────────────────────────────────────────
+  // -- Profile setup overlay --------------------------------------------------
   if (showProfile) {
     return (
       <div style={{ minHeight: "100vh", background: T.white, maxWidth: 480, margin: "0 auto" }}>
@@ -92,7 +92,7 @@ export default function App() {
     );
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // -- Render -----------------------------------------------------------------
   return (
     <div style={{ minHeight: "100vh", background: T.white, maxWidth: 480, margin: "0 auto", paddingBottom: 72 }}>
       {view === "home" && (
