@@ -34,9 +34,72 @@ export async function tryAutoBlur(canvas) {
 }
 
 // --- Extract N frames, optionally cropped to a swimmer region ----------------
-// crop: { x, y, w, h } as 0–1 ratios of the full frame — null = full frame
-// redactZones: privacy boxes in canvas-local coords (after crop is applied)
-export async function extractFrames(videoFile, redactZones, count = 4, crop = null) {
+// crop: { x, y, w, h } as 0-1 ratios of the full frame -- null = full frame
+// onProgress: optional callback(framesExtracted, total)
+// withTimestamps: if true, returns [{data, time}] instead of [base64string]
+export async function extractFrames(videoFile, redactZones, count = 60, crop = null, onProgress = null, withTimestamps = false) {
+  // Scale resolution based on frame count to keep request size manageable
+  const W = count <= 10 ? 480 : 320;
+  const H = count <= 10 ? 270 : 180;
+
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    video.src = URL.createObjectURL(videoFile);
+    const frames = [];
+
+    video.onloadedmetadata = () => {
+      const duration = video.duration;
+      const times = Array.from(
+        { length: count },
+        (_, i) => (duration / (count + 1)) * (i + 1)
+      );
+      let idx = 0;
+
+      const next = () => {
+        if (idx >= times.length) {
+          URL.revokeObjectURL(video.src);
+          resolve(frames);
+          return;
+        }
+        video.currentTime = times[idx];
+        video.onseeked = async () => {
+          const full = document.createElement("canvas");
+          full.width = W; full.height = H;
+          full.getContext("2d").drawImage(video, 0, 0, W, H);
+
+          let c;
+          if (crop) {
+            const sx = Math.round(crop.x * W);
+            const sy = Math.round(crop.y * H);
+            const sw = Math.round(crop.w * W);
+            const sh = Math.round(crop.h * H);
+            c = document.createElement("canvas");
+            c.width = W; c.height = H;
+            c.getContext("2d").drawImage(full, sx, sy, sw, sh, 0, 0, W, H);
+          } else {
+            c = full;
+          }
+
+          await tryAutoBlur(c);
+
+          const ctx = c.getContext("2d");
+          redactZones.forEach((z) =>
+            pixelate(ctx, (z.x / z.cw) * W, (z.y / z.ch) * H, (z.w / z.cw) * W, (z.h / z.ch) * H, 16)
+          );
+
+          const data = c.toDataURL("image/jpeg", 0.70).split(",")[1];
+          frames.push(withTimestamps ? { data, time: parseFloat(times[idx].toFixed(2)) } : data);
+          idx++;
+          if (onProgress) onProgress(idx, count);
+          next();
+        };
+      };
+      next();
+    };
+    video.load();
+  });
+}
+
   return new Promise((resolve) => {
     const video = document.createElement("video");
     video.src = URL.createObjectURL(videoFile);
@@ -57,46 +120,44 @@ export async function extractFrames(videoFile, redactZones, count = 4, crop = nu
         }
         video.currentTime = times[idx];
         video.onseeked = async () => {
-          // -- Step 1: draw full frame at 480×270 ------------------------------
+          // -- Step 1: draw full frame ------------------------------------------
           const full = document.createElement("canvas");
-          full.width = 480; full.height = 270;
-          full.getContext("2d").drawImage(video, 0, 0, 480, 270);
+          full.width = W; full.height = H;
+          full.getContext("2d").drawImage(video, 0, 0, W, H);
 
-          // -- Step 2: crop to swimmer region if provided ----------------------
+          // -- Step 2: crop to swimmer region if provided -----------------------
           let c;
           if (crop) {
-            const sx = Math.round(crop.x * 480);
-            const sy = Math.round(crop.y * 270);
-            const sw = Math.round(crop.w * 480);
-            const sh = Math.round(crop.h * 270);
-
-            // Output canvas: fixed 480×270 (stretches crop to fill — gives Claude
-            // a consistently sized, zoomed-in view of just this swimmer)
+            const sx = Math.round(crop.x * W);
+            const sy = Math.round(crop.y * H);
+            const sw = Math.round(crop.w * W);
+            const sh = Math.round(crop.h * H);
             c = document.createElement("canvas");
-            c.width = 480; c.height = 270;
-            c.getContext("2d").drawImage(full, sx, sy, sw, sh, 0, 0, 480, 270);
+            c.width = W; c.height = H;
+            c.getContext("2d").drawImage(full, sx, sy, sw, sh, 0, 0, W, H);
           } else {
             c = full;
           }
 
-          // -- Step 3: auto-blur faces -----------------------------------------
+          // -- Step 3: auto-blur faces ------------------------------------------
           await tryAutoBlur(c);
 
-          // -- Step 4: apply manual redact zones ------------------------------
+          // -- Step 4: apply manual redact zones --------------------------------
           const ctx = c.getContext("2d");
           redactZones.forEach((z) =>
             pixelate(
               ctx,
-              (z.x / z.cw) * 480,
-              (z.y / z.ch) * 270,
-              (z.w / z.cw) * 480,
-              (z.h / z.ch) * 270,
+              (z.x / z.cw) * W,
+              (z.y / z.ch) * H,
+              (z.w / z.cw) * W,
+              (z.h / z.ch) * H,
               16
             )
           );
 
-          frames.push(c.toDataURL("image/jpeg", 0.75).split(",")[1]);
+          frames.push(c.toDataURL("image/jpeg", 0.70).split(",")[1]);
           idx++;
+          if (onProgress) onProgress(idx, count);
           next();
         };
       };
