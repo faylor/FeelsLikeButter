@@ -116,7 +116,7 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
       x: Math.min(startPt.x, p.x),
       y: Math.min(startPt.y, p.y),
       w: Math.abs(p.x - startPt.x),
-      h: Math.abs(p.y - startPt.h),
+      h: Math.abs(p.y - startPt.y),
     };
     // Require a minimum 40×40 selection
     if (z.w > 40 && z.h > 40) setCrop(z);
