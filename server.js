@@ -68,6 +68,14 @@ app.get("/api/swim-results", async (req, res) => {
 
     const html = await response.text();
     console.log(`[swim-results] got ${html.length} bytes`);
+    // Log a snippet so we can see the actual table structure
+    const tableStart = html.indexOf("<table");
+    console.log(`[swim-results] first table at char ${tableStart}`);
+    if (tableStart > -1) {
+      console.log(`[swim-results] table preview: ${html.slice(tableStart, tableStart + 400).replace(/\s+/g, " ")}`);
+    } else {
+      console.log(`[swim-results] no table found -- page preview: ${html.slice(0, 300).replace(/\s+/g, " ")}`);
+    }
 
     const parsed = parseSwimResults(html);
     console.log(`[swim-results] name="${parsed.name}", ${Object.keys(parsed.times).length} times`);
