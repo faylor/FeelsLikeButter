@@ -158,80 +158,97 @@ export async function extractTrackedFrames(
           (z.w / z.cw) * OUT_W, (z.h / z.ch) * OUT_H, 14)
       );
 
-      // 4. Pose detection + tracking (only if pose module is ready)
-      let tracked  = false;
-      let cropBox  = null;
+      // 4. Pose detection on FULL FRAME -- then crop around result
+      // Never crop before detecting -- swimmer may be outside initial box
+      let tracked   = false;
+      let cropBox   = null;
       let landmarks = null;
 
       if (poseReady && poseModule) {
         try {
+          // Always detect on the full captured frame
           const poses = await poseModule.detectPoses(cap);
-          const match = poseModule.closestPose(poses, targetCx, targetCy);
 
-          if (match && match.bb.confidence > 0.3) {
+          // Find pose closest to last known position
+          const searchCx = smoothCx !== null ? smoothCx : targetCx;
+          const searchCy = smoothCy !== null ? smoothCy : targetCy;
+          const match = poseModule.closestPose(poses, searchCx, searchCy);
+
+          if (match && match.bb.confidence > 0.25) {
             const bb = match.bb;
             lostCount = 0;
             landmarks = match.landmarks;
             tracked = true;
 
-            // Smooth POSITION with EMA -- prevents jitter
-            // Let SIZE adapt freely -- must follow body shape changes (crouch/dive/streamline)
-            if (bb.confidence > 0.45) {
-              smoothCx = ema(smoothCx, bb.cx, 0.4);
-              smoothCy = ema(smoothCy, bb.cy, 0.4);
-            } else {
-              // Low confidence -- move target less aggressively
-              smoothCx = ema(smoothCx, bb.cx, 0.15);
-              smoothCy = ema(smoothCy, bb.cy, 0.15);
-            }
+            // Smooth POSITION only -- size follows the actual pose shape
+            smoothCx = ema(smoothCx, bb.cx, 0.45);
+            smoothCy = ema(smoothCy, bb.cy, 0.45);
             targetCx = smoothCx;
             targetCy = smoothCy;
 
-            // Detect body orientation from shoulder/hip line
-            const ls = landmarks[11], rs = landmarks[12]; // shoulders
-            const lh = landmarks[23], rh = landmarks[24]; // hips
-            let orientation = "upright"; // default
-            if (ls && rs && lh && rh &&
-                (ls.visibility||0) > 0.3 && (rs.visibility||0) > 0.3) {
-              const shoulderAngle = Math.abs(Math.atan2(ls.y - rs.y, ls.x - rs.x) * 180 / Math.PI);
-              if (shoulderAngle > 45) orientation = "horizontal"; // diving/streamline
-              else if (shoulderAngle > 20) orientation = "angled"; // entering water
+            // Detect body orientation from shoulder line angle
+            const ls = landmarks[11], rs = landmarks[12];
+            let orientation = "upright";
+            if (ls && rs && (ls.visibility||0) > 0.3 && (rs.visibility||0) > 0.3) {
+              const angle = Math.abs(Math.atan2(ls.y - rs.y, ls.x - rs.x) * 180 / Math.PI);
+              if (angle > 45) orientation = "horizontal";
+              else if (angle > 20) orientation = "angled";
             }
 
-            // Padding per orientation -- horizontal swimmer needs wider crop
-            const padX = orientation === "horizontal" ? 0.18 : 0.15;
-            const padY = orientation === "horizontal" ? 0.25 : 0.18;
-
-            // Crop directly from actual pose bbox + orientation-aware padding
-            // No size smoothing -- adapt immediately to body shape
-            const cx = smoothCx, cy = smoothCy;
-            const hw = Math.min((bb.w / 2) + padX, 0.5);
-            const hh = Math.min((bb.h / 2) + padY, 0.5);
+            // Generous padding based on orientation
+            // Horizontal (dive/streamline) needs much wider crop
+            const padX = orientation === "horizontal" ? 0.22 : 0.15;
+            const padY = orientation === "horizontal" ? 0.28 : 0.18;
 
             cropBox = {
-              x: Math.max(0, Math.round((cx - hw) * OUT_W)),
-              y: Math.max(0, Math.round((cy - hh) * OUT_H)),
-              w: Math.min(OUT_W, Math.round(hw * 2 * OUT_W)),
-              h: Math.min(OUT_H, Math.round(hh * 2 * OUT_H)),
+              x: Math.max(0, Math.round((bb.cx - bb.w/2 - padX) * OUT_W)),
+              y: Math.max(0, Math.round((bb.cy - bb.h/2 - padY) * OUT_H)),
+              w: Math.min(OUT_W, Math.round((bb.w + padX*2) * OUT_W)),
+              h: Math.min(OUT_H, Math.round((bb.h + padY*2) * OUT_H)),
             };
             cropBox.w = Math.min(cropBox.w, OUT_W - cropBox.x);
             cropBox.h = Math.min(cropBox.h, OUT_H - cropBox.y);
             lastGoodCrop = { ...cropBox };
+
           } else {
             lostCount++;
+
+            // Progressively expand search area when pose is lost
+            // After a few lost frames assume swimmer is moving fast -- show wider view
+            if (lostCount > 3) {
+              // Show increasingly wide crop centred on last known position
+              const expansion = Math.min(0.15 * (lostCount - 3), 0.4);
+              const cx = smoothCx ?? targetCx, cy = smoothCy ?? targetCy;
+              cropBox = {
+                x: Math.max(0, Math.round((cx - 0.35 - expansion) * OUT_W)),
+                y: Math.max(0, Math.round((cy - 0.35 - expansion) * OUT_H)),
+                w: Math.min(OUT_W, Math.round((0.7 + expansion*2) * OUT_W)),
+                h: Math.min(OUT_H, Math.round((0.7 + expansion*2) * OUT_H)),
+              };
+              cropBox.w = Math.min(cropBox.w, OUT_W - cropBox.x);
+              cropBox.h = Math.min(cropBox.h, OUT_H - cropBox.y);
+              // After 8+ lost frames just show the full frame
+              if (lostCount >= 8) cropBox = { x: 0, y: 0, w: OUT_W, h: OUT_H };
+            }
           }
         } catch (poseErr) {
           console.warn("[video] pose error frame", idx, poseErr.message);
+          lostCount++;
         }
       }
 
-      // Fallback crop
+      // Fallback when pose not available
       if (!cropBox) {
-        cropBox = lostCount < 10 && lastGoodCrop
-          ? lastGoodCrop
-          : initialCrop
-            ? { x: Math.round(initialCrop.x * OUT_W), y: Math.round(initialCrop.y * OUT_H), w: Math.round(initialCrop.w * OUT_W), h: Math.round(initialCrop.h * OUT_H) }
-            : { x: 0, y: 0, w: OUT_W, h: OUT_H };
+        if (lostCount <= 3 && lastGoodCrop) {
+          cropBox = lastGoodCrop;
+        } else if (initialCrop) {
+          cropBox = {
+            x: Math.round(initialCrop.x * OUT_W), y: Math.round(initialCrop.y * OUT_H),
+            w: Math.round(initialCrop.w * OUT_W), h: Math.round(initialCrop.h * OUT_H),
+          };
+        } else {
+          cropBox = { x: 0, y: 0, w: OUT_W, h: OUT_H };
+        }
       }
 
       // 5. Create output frame with letterboxed crop
