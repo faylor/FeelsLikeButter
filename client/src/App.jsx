@@ -53,6 +53,7 @@ export default function App() {
   const [crop, setCrop]             = useState(null);
   const [result, setResult]         = useState(null);
   const [error, setError]           = useState(null);
+  const [analysedFrames, setAnalysedFrames] = useState([]); // annotated frames shown post-analysis
   const [sessions, setSessions]     = useState([]);
   const [note, setNote]             = useState("");
   const [profile, setProfile]       = useState(null);
@@ -84,6 +85,7 @@ export default function App() {
       );
       setExtractProgress(null);
       const r = await analyzeWithClaude(frames, stroke, STROKE_CHECKLISTS[stroke]);
+      setAnalysedFrames(frames);
       setResult(r); setStep("result");
     } catch (e) {
       setError(`Analysis failed -- ${e.message}`);
@@ -103,6 +105,7 @@ export default function App() {
       setSessions(updated);
     } catch (e) { console.error("Save failed:", e); }
     setNote(""); setResult(null); setVideoFile(null); setCrop(null);
+    setAnalysedFrames([]);
     setStep("upload"); setView("history");
   };
 
@@ -185,6 +188,7 @@ export default function App() {
           note={note} setNote={setNote}
           extractProgress={extractProgress}
           frameCount={frameCount} setFrameCount={setFrameCount}
+          analysedFrames={analysedFrames}
           onLaneConfirm={handleLaneConfirm}
           onPrivacyConfirm={handlePrivacyConfirm}
           onSave={handleSave}
