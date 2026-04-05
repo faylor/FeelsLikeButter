@@ -1,16 +1,25 @@
 import React from 'react';
-import AnalyzingScreen from './AnalyzingScreen';
-import ResultPanel from './ResultPanel';
-import UploadStep from './UploadStep';
+
+const AnalyzingScreen = () => {
+  return <div>Analyzing...</div>;
+};
+
+const ResultPanel = () => {
+  return <div>Results will be displayed here.</div>;
+};
+
+const UploadStep = () => {
+  return <div>Upload your file here.</div>;
+};
 
 const AnalyzeView = () => {
-    return (
-        <div>
-            <AnalyzingScreen />
-            <ResultPanel />
-            <UploadStep />
-        </div>
-    );
+  return (
+    <div>
+      <UploadStep />
+      <AnalyzingScreen />
+      <ResultPanel />
+    </div>
+  );
 };
 
 export default AnalyzeView;
