@@ -1,30 +1,31 @@
-// --- MediaPipe Pose for swimming analysis ------------------------------------
-// Uses @mediapipe/tasks-vision via CDN
-// The bundle exposes everything under window.mpTasksVision (tasks-vision 0.10.x)
+// --- MediaPipe Pose for swimming kinematics ----------------------------------
+// Uses @mediapipe/tasks-vision npm package (reliable, no CDN global guessing)
+// WASM files loaded from CDN -- JS is bundled locally via Vite
 
+import { PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+
+const WASM_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+
+// Landmark indices
 const LM = {
   NOSE: 0,
-  LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12,
-  LEFT_ELBOW: 13,    RIGHT_ELBOW: 14,
-  LEFT_WRIST: 15,    RIGHT_WRIST: 16,
-  LEFT_HIP: 23,      RIGHT_HIP: 24,
-  LEFT_KNEE: 25,     RIGHT_KNEE: 26,
-  LEFT_ANKLE: 27,    RIGHT_ANKLE: 28,
+  L_SHOULDER: 11, R_SHOULDER: 12,
+  L_ELBOW: 13,    R_ELBOW: 14,
+  L_WRIST: 15,    R_WRIST: 16,
+  L_HIP: 23,      R_HIP: 24,
+  L_KNEE: 25,     R_KNEE: 26,
+  L_ANKLE: 27,    R_ANKLE: 28,
 };
 
 const SKELETON = [
-  [LM.LEFT_SHOULDER,  LM.RIGHT_SHOULDER],
-  [LM.LEFT_SHOULDER,  LM.LEFT_ELBOW],
-  [LM.LEFT_ELBOW,     LM.LEFT_WRIST],
-  [LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW],
-  [LM.RIGHT_ELBOW,    LM.RIGHT_WRIST],
-  [LM.LEFT_SHOULDER,  LM.LEFT_HIP],
-  [LM.RIGHT_SHOULDER, LM.RIGHT_HIP],
-  [LM.LEFT_HIP,       LM.RIGHT_HIP],
-  [LM.LEFT_HIP,       LM.LEFT_KNEE],
-  [LM.RIGHT_HIP,      LM.RIGHT_KNEE],
-  [LM.LEFT_KNEE,      LM.LEFT_ANKLE],
-  [LM.RIGHT_KNEE,     LM.RIGHT_ANKLE],
+  [LM.L_SHOULDER, LM.R_SHOULDER],
+  [LM.L_SHOULDER, LM.L_ELBOW],   [LM.L_ELBOW, LM.L_WRIST],
+  [LM.R_SHOULDER, LM.R_ELBOW],   [LM.R_ELBOW, LM.R_WRIST],
+  [LM.L_SHOULDER, LM.L_HIP],     [LM.R_SHOULDER, LM.R_HIP],
+  [LM.L_HIP,      LM.R_HIP],
+  [LM.L_HIP,      LM.L_KNEE],    [LM.L_KNEE, LM.L_ANKLE],
+  [LM.R_HIP,      LM.R_KNEE],    [LM.R_KNEE, LM.R_ANKLE],
 ];
 
 function angleBetween(a, b, c) {
@@ -32,104 +33,115 @@ function angleBetween(a, b, c) {
   const cb = { x: c.x - b.x, y: c.y - b.y };
   const dot = ab.x * cb.x + ab.y * cb.y;
   const mag = Math.sqrt(ab.x**2 + ab.y**2) * Math.sqrt(cb.x**2 + cb.y**2);
-  if (mag === 0) return null;
+  if (mag < 0.0001) return null;
   return Math.round(Math.acos(Math.max(-1, Math.min(1, dot / mag))) * 180 / Math.PI);
 }
 
-// Get bounding box of a pose in normalised 0-1 coords
-export function getPoseBoundingBox(landmarks, padding = 0.12) {
-  const visible = landmarks.filter(l => l.visibility > 0.3);
-  if (visible.length < 4) return null;
-  const xs = visible.map(l => l.x);
-  const ys = visible.map(l => l.y);
+// Bounding box of a pose -- normalised 0-1, with padding
+export function getPoseBoundingBox(landmarks, padding = 0.15) {
+  const vis = landmarks.filter(l => (l.visibility || 0) > 0.25);
+  if (vis.length < 5) return null;
+  const xs = vis.map(l => l.x), ys = vis.map(l => l.y);
   const minX = Math.max(0, Math.min(...xs) - padding);
   const maxX = Math.min(1, Math.max(...xs) + padding);
   const minY = Math.max(0, Math.min(...ys) - padding);
   const maxY = Math.min(1, Math.max(...ys) + padding);
+  // Pose confidence = average visibility of core landmarks
+  const core = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP];
+  const conf = core.reduce((s, i) => s + (landmarks[i]?.visibility || 0), 0) / core.length;
   return {
-    x: minX, y: minY,
-    w: maxX - minX, h: maxY - minY,
-    cx: (minX + maxX) / 2,
-    cy: (minY + maxY) / 2,
+    x: minX, y: minY, w: maxX - minX, h: maxY - minY,
+    cx: (minX + maxX) / 2, cy: (minY + maxY) / 2,
+    confidence: conf,
   };
 }
 
-function getStrokeAngles(stroke, lm) {
+// Stroke-specific angle annotations
+function getAngles(stroke, lm) {
   const angles = [];
   const add = (label, a, b, c) => {
     const pa = lm[a], pb = lm[b], pc = lm[c];
     if (!pa || !pb || !pc) return;
-    if ((pa.visibility||0) < 0.4 || (pb.visibility||0) < 0.4 || (pc.visibility||0) < 0.4) return;
+    if ((pa.visibility||0) < 0.35 || (pb.visibility||0) < 0.35 || (pc.visibility||0) < 0.35) return;
     const deg = angleBetween(pa, pb, pc);
     if (deg !== null) angles.push({ label, deg, x: pb.x, y: pb.y });
   };
 
-  // Body line
-  const ls = lm[LM.LEFT_SHOULDER], rs = lm[LM.RIGHT_SHOULDER];
+  // Body line angle vs horizontal (always)
+  const ls = lm[LM.L_SHOULDER], rs = lm[LM.R_SHOULDER];
   if (ls && rs && (ls.visibility||0) > 0.4 && (rs.visibility||0) > 0.4) {
-    const bodyAngle = Math.abs(Math.round(
-      Math.atan2(ls.y - rs.y, ls.x - rs.x) * 180 / Math.PI
-    ));
-    angles.push({ label: "body", deg: bodyAngle, x: (ls.x + rs.x) / 2, y: Math.min(ls.y, rs.y) - 0.06 });
+    const deg = Math.abs(Math.round(Math.atan2(ls.y - rs.y, ls.x - rs.x) * 180 / Math.PI));
+    angles.push({ label: "body", deg, x: (ls.x + rs.x) / 2, y: Math.min(ls.y, rs.y) - 0.07 });
   }
 
   if (stroke === "Freestyle" || stroke === "Backstroke") {
-    add("L-elbow",    LM.LEFT_SHOULDER,  LM.LEFT_ELBOW,    LM.LEFT_WRIST);
-    add("R-elbow",    LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW,   LM.RIGHT_WRIST);
-    add("L-shoulder", LM.LEFT_ELBOW,     LM.LEFT_SHOULDER, LM.LEFT_HIP);
-    add("R-shoulder", LM.RIGHT_ELBOW,    LM.RIGHT_SHOULDER,LM.RIGHT_HIP);
-    const lh = lm[LM.LEFT_HIP], rh = lm[LM.RIGHT_HIP];
+    add("L-elbow",    LM.L_SHOULDER, LM.L_ELBOW,    LM.L_WRIST);
+    add("R-elbow",    LM.R_SHOULDER, LM.R_ELBOW,    LM.R_WRIST);
+    add("L-shoulder", LM.L_ELBOW,    LM.L_SHOULDER, LM.L_HIP);
+    add("R-shoulder", LM.R_ELBOW,    LM.R_SHOULDER, LM.R_HIP);
+    const lh = lm[LM.L_HIP], rh = lm[LM.R_HIP];
     if (lh && rh && (lh.visibility||0) > 0.4 && (rh.visibility||0) > 0.4) {
-      const hr = Math.abs(Math.round(Math.atan2(lh.y - rh.y, lh.x - rh.x) * 180 / Math.PI));
-      angles.push({ label: "hip-rot", deg: hr, x: (lh.x + rh.x) / 2, y: lh.y });
+      const deg = Math.abs(Math.round(Math.atan2(lh.y - rh.y, lh.x - rh.x) * 180 / Math.PI));
+      angles.push({ label: "hip-rot", deg, x: (lh.x + rh.x) / 2, y: lh.y });
     }
   }
   if (stroke === "Breaststroke") {
-    add("L-elbow", LM.LEFT_SHOULDER, LM.LEFT_ELBOW,  LM.LEFT_WRIST);
-    add("R-elbow", LM.RIGHT_SHOULDER,LM.RIGHT_ELBOW, LM.RIGHT_WRIST);
-    add("L-knee",  LM.LEFT_HIP,      LM.LEFT_KNEE,   LM.LEFT_ANKLE);
-    add("R-knee",  LM.RIGHT_HIP,     LM.RIGHT_KNEE,  LM.RIGHT_ANKLE);
+    add("L-elbow", LM.L_SHOULDER, LM.L_ELBOW, LM.L_WRIST);
+    add("R-elbow", LM.R_SHOULDER, LM.R_ELBOW, LM.R_WRIST);
+    add("L-knee",  LM.L_HIP,      LM.L_KNEE,  LM.L_ANKLE);
+    add("R-knee",  LM.R_HIP,      LM.R_KNEE,  LM.R_ANKLE);
   }
   if (stroke === "Butterfly") {
-    add("L-elbow", LM.LEFT_SHOULDER, LM.LEFT_ELBOW,  LM.LEFT_WRIST);
-    add("R-elbow", LM.RIGHT_SHOULDER,LM.RIGHT_ELBOW, LM.RIGHT_WRIST);
-    add("L-hip",   LM.LEFT_SHOULDER, LM.LEFT_HIP,    LM.LEFT_KNEE);
-    add("R-hip",   LM.RIGHT_SHOULDER,LM.RIGHT_HIP,   LM.RIGHT_KNEE);
+    add("L-elbow", LM.L_SHOULDER, LM.L_ELBOW, LM.L_WRIST);
+    add("R-elbow", LM.R_SHOULDER, LM.R_ELBOW, LM.R_WRIST);
+    add("L-hip",   LM.L_SHOULDER, LM.L_HIP,   LM.L_KNEE);
+    add("R-hip",   LM.R_SHOULDER, LM.R_HIP,   LM.R_KNEE);
   }
   return angles;
 }
 
+// Draw skeleton + angle labels onto canvas
 export function drawPoseOverlay(ctx, landmarks, W, H, stroke) {
-  if (!landmarks || landmarks.length === 0) return [];
+  if (!landmarks?.length) return [];
 
-  ctx.strokeStyle = "rgba(255,255,255,0.7)";
-  ctx.lineWidth = 2;
+  // Skeleton
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = "rgba(255,255,255,0.75)";
   SKELETON.forEach(([a, b]) => {
     const la = landmarks[a], lb = landmarks[b];
-    if (!la || !lb || (la.visibility||0) < 0.3 || (lb.visibility||0) < 0.3) return;
+    if (!la || !lb || (la.visibility||0) < 0.25 || (lb.visibility||0) < 0.25) return;
     ctx.beginPath();
     ctx.moveTo(la.x * W, la.y * H);
     ctx.lineTo(lb.x * W, lb.y * H);
     ctx.stroke();
   });
 
+  // Joint dots
   Object.values(LM).forEach(idx => {
     const l = landmarks[idx];
-    if (!l || (l.visibility||0) < 0.3) return;
-    ctx.fillStyle = (l.visibility||0) > 0.7 ? "#FFFFFF" : "rgba(255,255,255,0.4)";
+    if (!l || (l.visibility||0) < 0.25) return;
+    ctx.fillStyle = (l.visibility||0) > 0.65 ? "#FFFFFF" : "rgba(255,255,255,0.4)";
     ctx.beginPath();
-    ctx.arc(l.x * W, l.y * H, 4, 0, Math.PI * 2);
+    ctx.arc(l.x * W, l.y * H, 4.5, 0, Math.PI * 2);
     ctx.fill();
   });
 
-  const angles = getStrokeAngles(stroke, landmarks);
-  ctx.font = "bold 11px sans-serif";
+  // Angle labels
+  const angles = getAngles(stroke, landmarks);
+  ctx.font = "bold 12px sans-serif";
   angles.forEach(({ label, deg, x, y }) => {
-    const px = x * W, py = Math.max(14, y * H - 16);
+    const px = x * W;
+    const py = Math.max(16, Math.min(H - 8, y * H - 18));
     const text = `${label} ${deg}`;
     const tw = ctx.measureText(text).width;
     ctx.fillStyle = "#E63946";
-    ctx.fillRect(px - tw / 2 - 5, py - 12, tw + 10, 16);
+    ctx.beginPath();
+    ctx.roundRect?.(px - tw/2 - 5, py - 13, tw + 10, 17, 3);
+    ctx.fill();
+    if (!ctx.roundRect) {
+      ctx.fillStyle = "#E63946";
+      ctx.fillRect(px - tw/2 - 5, py - 13, tw + 10, 17);
+    }
     ctx.fillStyle = "#FFFFFF";
     ctx.textAlign = "center";
     ctx.fillText(text, px, py);
@@ -139,7 +151,7 @@ export function drawPoseOverlay(ctx, landmarks, W, H, stroke) {
   return angles;
 }
 
-// --- Lazy-load MediaPipe via CDN ---------------------------------------------
+// --- Singleton detector ------------------------------------------------------
 let detector   = null;
 let initPromise = null;
 
@@ -148,68 +160,10 @@ export async function initPoseDetector() {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    // Load the bundle if not already present
-    if (!window.mpTasksVision) {
-      console.log("[pose] loading MediaPipe CDN...");
-      await new Promise((res, rej) => {
-        const s = document.createElement("script");
-        // IIFE bundle -- puts exports on window.mpTasksVision
-        s.src = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.js";
-        s.crossOrigin = "anonymous";
-        s.onload = () => {
-          console.log("[pose] script loaded, window keys with mediapipe:",
-            Object.keys(window).filter(k => k.toLowerCase().includes("mediapipe") || k.toLowerCase().includes("mptasks") || k.toLowerCase().includes("vision")).join(", ") || "none found"
-          );
-          res();
-        };
-        s.onerror = () => rej(new Error("MediaPipe CDN load failed -- check network"));
-        document.head.appendChild(s);
-      });
-      await new Promise(r => setTimeout(r, 200));
-    }
-
-    // The IIFE bundle from @mediapipe/tasks-vision puts classes directly on window
-    // Try the known possible global locations in order
-    const api = window.mediapipeTasks
-      || window.mpTasksVision
-      || window.mediapipeTasksVision
-      || window;
-
-    let PoseLandmarker  = api.PoseLandmarker;
-    let FilesetResolver = api.FilesetResolver;
-
-    // Last resort -- scan window for PoseLandmarker
-    if (!PoseLandmarker) {
-      for (const key of Object.keys(window)) {
-        if (window[key] && typeof window[key] === "object") {
-          if (window[key].PoseLandmarker) {
-            PoseLandmarker  = window[key].PoseLandmarker;
-            FilesetResolver = window[key].FilesetResolver;
-            console.log("[pose] found API under window." + key);
-            break;
-          }
-        }
-        if (window[key]?.name === "PoseLandmarker" || (typeof window[key] === "function" && String(window[key]).includes("PoseLandmarker"))) {
-          PoseLandmarker = window[key];
-          console.log("[pose] found PoseLandmarker directly on window." + key);
-        }
-      }
-    }
-
-    if (!PoseLandmarker || !FilesetResolver) {
-      const allKeys = Object.keys(window).filter(k => !["caches","frames","history","location","navigator","document","performance"].includes(k)).slice(0, 30);
-      throw new Error(`MediaPipe API not found. Window keys: ${allKeys.join(", ")}`);
-    }
-
-    console.log("[pose] creating PoseLandmarker...");
-    const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
-    );
+    console.log("[pose] initialising PoseLandmarker...");
+    const vision = await FilesetResolver.forVisionTasks(WASM_CDN);
     detector = await PoseLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-        delegate: "GPU",
-      },
+      baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
       runningMode: "IMAGE",
       numPoses: 3,
     });
@@ -220,32 +174,22 @@ export async function initPoseDetector() {
   return initPromise;
 }
 
-// --- Run pose detection on a canvas element ----------------------------------
-// The Tasks Vision API requires an HTMLImageElement or ImageData, not canvas.
-// We convert canvas -> ImageData for detection.
+// --- Detect all poses on a canvas --------------------------------------------
 export async function detectPoses(canvas) {
-  try {
-    const det = await initPoseDetector();
-    // Convert canvas to ImageData for Tasks Vision API
-    const ctx = canvas.getContext("2d");
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const result = det.detect(imageData);
-    const poses = result?.landmarks || [];
-    console.log(`[pose] detected ${poses.length} pose(s)`);
-    return poses;
-  } catch (e) {
-    console.error("[pose] detectPoses failed:", e.message);
-    return [];
-  }
+  const det = await initPoseDetector();
+  // Tasks Vision IMAGE mode accepts HTMLCanvasElement directly
+  const result = det.detect(canvas);
+  const poses  = result?.landmarks || [];
+  return poses;
 }
 
-// --- Pick pose closest to target centre (normalised 0-1) ---------------------
+// --- Pick pose closest to target (normalised coords) -------------------------
 export function closestPose(poses, targetCx, targetCy) {
-  if (!poses || poses.length === 0) return null;
+  if (!poses?.length) return null;
   let best = null, bestDist = Infinity;
   poses.forEach(landmarks => {
     const bb = getPoseBoundingBox(landmarks);
-    if (!bb) return;
+    if (!bb || bb.confidence < 0.3) return; // skip low-confidence detections
     const dist = Math.hypot(bb.cx - targetCx, bb.cy - targetCy);
     if (dist < bestDist) { bestDist = dist; best = { landmarks, bb }; }
   });
