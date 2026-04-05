@@ -149,7 +149,19 @@ function getZoneLabel(t, allTimes) {
 // crop: { x, y, w, h } as 0-1 ratios of the full frame -- null = full frame
 // onProgress: optional callback(framesExtracted, total)
 // withTimestamps: if true, returns [{data, time}] instead of [base64string]
-export async function extractFrames(videoFile, redactZones, count = 60, crop = null, onProgress = null, withTimestamps = false) {
+// stroke: if provided, runs MediaPipe pose annotation on each frame
+export async function extractFrames(videoFile, redactZones, count = 60, crop = null, onProgress = null, withTimestamps = false, stroke = null) {
+  // Lazy-import pose annotator only when needed (avoids loading MediaPipe CDN on every page load)
+  let annotateFrame = null;
+  if (stroke) {
+    try {
+      const poseModule = await import("./pose.js");
+      annotateFrame = poseModule.annotateFrame;
+    } catch {
+      console.warn("[pose] could not load pose module, skipping annotation");
+    }
+  }
+
   // Scale resolution based on frame count to keep request size manageable
   const W = count <= 10 ? 480 : 320;
   const H = count <= 10 ? 270 : 180;
@@ -199,8 +211,19 @@ export async function extractFrames(videoFile, redactZones, count = 60, crop = n
             pixelate(ctx, (z.x / z.cw) * W, (z.y / z.ch) * H, (z.w / z.cw) * W, (z.h / z.ch) * H, 16)
           );
 
-          const data = c.toDataURL("image/jpeg", 0.70).split(",")[1];
-          frames.push(withTimestamps ? { data, time: parseFloat(times[idx].toFixed(2)) } : data);
+          // Run pose annotation if stroke provided and MediaPipe available
+          let anglesSummary = [];
+          if (annotateFrame) {
+            const { angles } = await annotateFrame(c, stroke);
+            anglesSummary = angles;
+          }
+
+          const data = c.toDataURL("image/jpeg", 0.72).split(",")[1];
+          if (withTimestamps) {
+            frames.push({ data, time: parseFloat(times[idx].toFixed(2)), angles: anglesSummary });
+          } else {
+            frames.push(data);
+          }
           idx++;
           if (onProgress) onProgress(idx, count);
           next();
