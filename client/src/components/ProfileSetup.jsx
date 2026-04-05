@@ -133,7 +133,7 @@ export function ProfileSetup({ profile, pbs, onSave, onCancel }) {
       <div style={{ padding: "32px 24px 20px" }}>
         {/* Back button always visible */}
         <button onClick={() => setPage("profile")} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 16px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-          <- Back
+          &larr; Back
         </button>
         <Label style={{ color: T.red, marginBottom: 6 }}>Personal Bests</Label>
         <div style={{ fontSize: 22, fontWeight: 300, letterSpacing: "-0.02em", color: T.black, marginBottom: 20 }}>
@@ -178,7 +178,7 @@ export function ProfileSetup({ profile, pbs, onSave, onCancel }) {
 
       <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: 10 }}>
         <Btn onClick={handleSave}>Save Profile &amp; Times</Btn>
-        <Btn onClick={() => setPage("profile")} variant="secondary"> Back</Btn>
+        <Btn onClick={() => setPage("profile")} variant="secondary">&larr; Back</Btn>
       </div>
     </div>
   );
@@ -188,7 +188,7 @@ export function ProfileSetup({ profile, pbs, onSave, onCancel }) {
       <div style={{ padding: "32px 24px 20px" }}>
         {/* Back/cancel always visible */}
         <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 16px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-          <- Home
+          &larr; Home
         </button>
         <Label style={{ color: T.red, marginBottom: 6 }}>Athlete Profile</Label>
         <div style={{ fontSize: 22, fontWeight: 300, letterSpacing: "-0.02em", color: T.black, marginBottom: 20 }}>
