@@ -1,8 +1,6 @@
 // --- MediaPipe Pose for swimming kinematics ----------------------------------
-// Uses @mediapipe/tasks-vision npm package (reliable, no CDN global guessing)
-// WASM files loaded from CDN -- JS is bundled locally via Vite
-
-import { PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+// Loaded dynamically from CDN at runtime -- not bundled by Vite
+// CDN: @mediapipe/tasks-vision IIFE bundle exposes globals on window
 
 const WASM_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
@@ -160,8 +158,56 @@ export async function initPoseDetector() {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    console.log("[pose] initialising PoseLandmarker...");
-    const vision = await FilesetResolver.forVisionTasks(WASM_CDN);
+    // Load CDN bundle if not already loaded
+    if (!window._mpVisionLoaded) {
+      console.log("[pose] loading MediaPipe from CDN...");
+      await new Promise((res, rej) => {
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.js";
+        s.crossOrigin = "anonymous";
+        s.onload = () => { window._mpVisionLoaded = true; res(); };
+        s.onerror = () => rej(new Error("Failed to load MediaPipe CDN"));
+        document.head.appendChild(s);
+      });
+      // Brief pause for globals to register
+      await new Promise(r => setTimeout(r, 150));
+    }
+
+    // The IIFE bundle from @mediapipe/tasks-vision@0.10.14 puts exports
+    // directly on window -- scan for PoseLandmarker
+    let PoseLandmarker, FilesetResolver;
+
+    // Try known namespace locations first
+    for (const ns of [window, window.mpTasksVision, window.MediaPipeTasksVision, window.mediapipeTasks]) {
+      if (ns?.PoseLandmarker && ns?.FilesetResolver) {
+        PoseLandmarker  = ns.PoseLandmarker;
+        FilesetResolver = ns.FilesetResolver;
+        console.log("[pose] found MediaPipe API");
+        break;
+      }
+    }
+
+    // Deep scan of window properties if not found above
+    if (!PoseLandmarker) {
+      for (const key of Object.keys(window)) {
+        const val = window[key];
+        if (val && typeof val === "object" && val.PoseLandmarker && val.FilesetResolver) {
+          PoseLandmarker  = val.PoseLandmarker;
+          FilesetResolver = val.FilesetResolver;
+          console.log("[pose] found MediaPipe API at window." + key);
+          break;
+        }
+      }
+    }
+
+    if (!PoseLandmarker || !FilesetResolver) {
+      throw new Error("MediaPipe API not found after CDN load. Check network connectivity.");
+    }
+
+    console.log("[pose] creating PoseLandmarker...");
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+    );
     detector = await PoseLandmarker.createFromOptions(vision, {
       baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
       runningMode: "IMAGE",
