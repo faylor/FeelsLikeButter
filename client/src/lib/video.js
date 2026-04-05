@@ -8,9 +8,7 @@ export function pixelate(ctx, x, y, w, h, block = 14) {
       const bh = Math.min(block, y + h - by);
       if (bw <= 0 || bh <= 0) continue;
       const d = ctx.getImageData(
-        bx + Math.floor(bw / 2),
-        by + Math.floor(bh / 2),
-        1, 1
+        bx + Math.floor(bw / 2), by + Math.floor(bh / 2), 1, 1
       ).data;
       ctx.fillStyle = `rgb(${d[0]},${d[1]},${d[2]})`;
       ctx.fillRect(bx, by, bw, bh);
@@ -18,7 +16,7 @@ export function pixelate(ctx, x, y, w, h, block = 14) {
   }
 }
 
-// --- Auto face detection (Chrome/Edge only via FaceDetector API) --------------
+// --- Auto face detection -----------------------------------------------------
 export async function tryAutoBlur(canvas) {
   if (!("FaceDetector" in window)) return 0;
   try {
@@ -28,37 +26,238 @@ export async function tryAutoBlur(canvas) {
       pixelate(ctx, b.x - 10, b.y - 10, b.width + 20, b.height + 20, 14)
     );
     return faces.length;
-  } catch {
-    return 0;
-  }
+  } catch { return 0; }
 }
 
-// --- Smart lap-aware timestamps -----------------------------------------------
-// Returns sorted list of timestamps clustered around predicted wall touches.
-// recentPbSecs: swimmer's recent PB in seconds (used to predict lap timing)
-// event: e.g. "100m Freestyle"
-// poolLength: 25 or 50
-// framesPerZone: how many frames to sample around each predicted wall touch
-// windowSecs: half-width of the sampling window around each predicted touch
-export function lapAwareTimestamps(videoDurationSecs, recentPbSecs, event, poolLength, framesPerZone = 5, windowSecs = 1.0) {
-  const dist      = parseInt(event) || 100;
-  const laps      = dist / poolLength;
-  const lapTime   = recentPbSecs / laps;
+// --- Output resolution for analysis frames -----------------------------------
+// 640x360 -- high enough for kinematics to be meaningful
+const OUT_W = 640;
+const OUT_H = 360;
 
-  // Predicted wall-touch times: end of each lap
+// --- Exponential moving average for smooth tracking --------------------------
+function ema(prev, next, alpha = 0.35) {
+  if (prev === null) return next;
+  return prev + alpha * (next - prev);
+}
+
+// --- Extract tracked frames with pose overlay --------------------------------
+// initialCrop: {x,y,w,h} as 0-1 ratios from LaneSelector -- seeds the tracker
+// redactZones: manual privacy boxes
+// count: number of frames to extract
+// stroke: used for angle selection in overlay
+// onProgress: callback(done, total, phase)
+// Returns: [{data: base64, frameIndex, timestamp, tracked, angles, approved: true}]
+export async function extractTrackedFrames(
+  videoFile, initialCrop, redactZones, count, stroke, onProgress
+) {
+  // Lazy-load pose module
+  let detectPoses, closestPose, getPoseBoundingBox, drawPoseOverlay;
+  try {
+    const pm = await import("./pose.js");
+    detectPoses      = pm.detectPoses;
+    closestPose      = pm.closestPose;
+    getPoseBoundingBox = pm.getPoseBoundingBox;
+    drawPoseOverlay  = pm.drawPoseOverlay;
+    if (onProgress) onProgress(0, count, "Loading pose detector...");
+    // Warm up the detector
+    await pm.initPoseDetector();
+  } catch (e) {
+    console.warn("[tracker] pose module unavailable:", e.message);
+  }
+
+  const frames = [];
+
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    const objUrl = URL.createObjectURL(videoFile);
+    video.src = objUrl;
+
+    video.onerror = () => {
+      URL.revokeObjectURL(objUrl);
+      reject(new Error("Video failed to load"));
+    };
+
+    video.onloadedmetadata = () => {
+      const duration = video.duration;
+      const times = Array.from(
+        { length: count },
+        (_, i) => (duration / (count + 1)) * (i + 1)
+      );
+
+      // Tracking state -- smoothed target centre in 0-1 space
+      let targetCx = (initialCrop?.x || 0) + (initialCrop?.w || 1) / 2;
+      let targetCy = (initialCrop?.y || 0) + (initialCrop?.h || 1) / 2;
+      let smoothCx = null, smoothCy = null;
+      let smoothW  = null, smoothH  = null;
+
+      // Full capture resolution
+      const CAP_W = 1280, CAP_H = 720;
+
+      let idx = 0;
+
+      const next = () => {
+        if (idx >= times.length) {
+          URL.revokeObjectURL(objUrl);
+          resolve(frames);
+          return;
+        }
+
+        video.currentTime = times[idx];
+        video.onseeked = async () => {
+          try {
+            // 1. Capture full frame at high resolution
+            const full = document.createElement("canvas");
+            full.width = CAP_W; full.height = CAP_H;
+            full.getContext("2d").drawImage(video, 0, 0, CAP_W, CAP_H);
+
+            // 2. Apply face blur to full frame first
+            await tryAutoBlur(full);
+            const fCtx = full.getContext("2d");
+            redactZones.forEach(z =>
+              pixelate(fCtx,
+                (z.x / z.cw) * CAP_W, (z.y / z.ch) * CAP_H,
+                (z.w / z.cw) * CAP_W, (z.h / z.ch) * CAP_H,
+                16
+              )
+            );
+
+            // 3. Detect poses on the full frame
+            let tracked = false;
+            let angles  = [];
+            let cropBox = null;
+
+            if (detectPoses) {
+              // Use a smaller canvas for detection (faster)
+              const det = document.createElement("canvas");
+              det.width = 640; det.height = 360;
+              det.getContext("2d").drawImage(full, 0, 0, 640, 360);
+
+              const poses = await detectPoses(det);
+              const match = closestPose(poses, targetCx, targetCy, 1, 1);
+
+              if (match) {
+                const bb = match.bb;
+                tracked = true;
+
+                // Smooth the crop position with EMA to reduce jitter
+                smoothCx = ema(smoothCx, bb.cx, 0.4);
+                smoothCy = ema(smoothCy, bb.cy, 0.4);
+                // Keep size somewhat stable -- slow to shrink, fast to grow
+                const newW = bb.w / 640;
+                const newH = bb.h / 360;
+                smoothW = smoothW === null ? newW : Math.max(newW, ema(smoothW, newW, 0.3));
+                smoothH = smoothH === null ? newH : Math.max(newH, ema(smoothH, newH, 0.3));
+
+                // Update tracking target for next frame
+                targetCx = smoothCx;
+                targetCy = smoothCy;
+
+                // Crop box in full resolution
+                const halfW = (smoothW / 2) * CAP_W;
+                const halfH = (smoothH / 2) * CAP_H;
+                cropBox = {
+                  x: Math.max(0, Math.round(smoothCx * CAP_W - halfW)),
+                  y: Math.max(0, Math.round(smoothCy * CAP_H - halfH)),
+                  w: Math.min(CAP_W, Math.round(smoothW * CAP_W)),
+                  h: Math.min(CAP_H, Math.round(smoothH * CAP_H)),
+                };
+              }
+            }
+
+            // 4. Fall back to initial crop if tracking failed
+            if (!cropBox && initialCrop) {
+              cropBox = {
+                x: Math.round(initialCrop.x * CAP_W),
+                y: Math.round(initialCrop.y * CAP_H),
+                w: Math.round(initialCrop.w * CAP_W),
+                h: Math.round(initialCrop.h * CAP_H),
+              };
+            }
+
+            // 5. Create output canvas at 640x360
+            const out = document.createElement("canvas");
+            out.width = OUT_W; out.height = OUT_H;
+            const oCtx = out.getContext("2d");
+
+            if (cropBox && cropBox.w > 10 && cropBox.h > 10) {
+              oCtx.drawImage(full,
+                cropBox.x, cropBox.y, cropBox.w, cropBox.h,
+                0, 0, OUT_W, OUT_H
+              );
+            } else {
+              // No crop -- use full frame scaled down
+              oCtx.drawImage(full, 0, 0, OUT_W, OUT_H);
+            }
+
+            // 6. Run pose overlay on the output crop
+            if (drawPoseOverlay && tracked && cropBox) {
+              // Re-detect on the cropped output for accurate overlay
+              const poses2 = await detectPoses(out);
+              if (poses2.length > 0) {
+                angles = drawPoseOverlay(oCtx, poses2[0], OUT_W, OUT_H, stroke);
+              }
+            }
+
+            // 7. Add frame index label
+            oCtx.fillStyle = "rgba(0,0,0,0.55)";
+            oCtx.fillRect(0, OUT_H - 22, 80, 22);
+            oCtx.fillStyle = "#fff";
+            oCtx.font = "10px 'Helvetica Neue', sans-serif";
+            oCtx.fillText(`#${idx + 1}  ${times[idx].toFixed(1)}s`, 6, OUT_H - 7);
+            if (tracked) {
+              oCtx.fillStyle = "#007A5E";
+              oCtx.fillRect(OUT_W - 58, OUT_H - 22, 58, 22);
+              oCtx.fillStyle = "#fff";
+              oCtx.fillText("tracked", OUT_W - 54, OUT_H - 7);
+            }
+
+            frames.push({
+              data:       out.toDataURL("image/jpeg", 0.82).split(",")[1],
+              frameIndex: idx,
+              timestamp:  parseFloat(times[idx].toFixed(2)),
+              tracked,
+              angles,
+              approved:   true,  // default approved, user can reject in review
+            });
+
+          } catch (e) {
+            console.error(`[tracker] frame ${idx} error:`, e.message);
+            // Push a placeholder so frame count is preserved
+            frames.push({
+              data: null, frameIndex: idx,
+              timestamp: times[idx], tracked: false,
+              angles: [], approved: false,
+            });
+          }
+
+          idx++;
+          if (onProgress) onProgress(idx, count, "Extracting & tracking");
+          next();
+        };
+      };
+
+      next();
+    };
+
+    video.load();
+  });
+}
+
+// --- Smart lap-aware timestamps (for timing analysis) ------------------------
+export function lapAwareTimestamps(videoDurationSecs, recentPbSecs, event, poolLength, framesPerZone = 5, windowSecs = 1.0) {
+  const dist    = parseInt(event) || 100;
+  const laps    = dist / poolLength;
+  const lapTime = recentPbSecs / laps;
+
   const wallTimes = [];
   for (let lap = 1; lap <= laps; lap++) {
-    // Use a slight negative-split model: first half ~51%, second ~49%
     const rawTime = lap < laps / 2
-      ? lapTime * lap * 1.02   // slightly slower in first half
-      : lapTime * lap * 0.98;  // slightly faster in second half
-    const predicted = Math.min(rawTime, videoDurationSecs - 0.1);
-    wallTimes.push(predicted);
+      ? lapTime * lap * 1.02
+      : lapTime * lap * 0.98;
+    wallTimes.push(Math.min(rawTime, videoDurationSecs - 0.1));
   }
 
   const timestamps = new Set();
-
-  // Add frames spread around each predicted wall touch
   wallTimes.forEach(wt => {
     for (let i = 0; i < framesPerZone; i++) {
       const offset = -windowSecs + (i / (framesPerZone - 1)) * windowSecs * 2;
@@ -66,24 +265,12 @@ export function lapAwareTimestamps(videoDurationSecs, recentPbSecs, event, poolL
       timestamps.add(parseFloat(t.toFixed(2)));
     }
   });
-
-  // Add 3 frames near the start (reaction + early stroke)
-  [0.5, 1.0, 1.8].forEach(t => {
-    if (t < videoDurationSecs) timestamps.add(t);
-  });
-
-  // Add 2 frames near the finish
-  [-0.5, -0.2].forEach(offset => {
-    const t = parseFloat(Math.max(0.1, videoDurationSecs + offset).toFixed(2));
-    timestamps.add(t);
-  });
-
+  [0.5, 1.0, 1.8].forEach(t => { if (t < videoDurationSecs) timestamps.add(t); });
+  [-0.5, -0.2].forEach(o => timestamps.add(parseFloat(Math.max(0.1, videoDurationSecs + o).toFixed(2))));
   return [...timestamps].sort((a, b) => a - b);
 }
 
-// --- Extract frames at specific timestamps ------------------------------------
-// timestamps: sorted array of seconds to sample
-// Otherwise same options as extractFrames
+// --- Extract frames at specific timestamps (for timing analysis) -------------
 export async function extractFramesAtTimes(videoFile, timestamps, redactZones = [], crop = null, onProgress = null) {
   const count = timestamps.length;
   const W = count <= 10 ? 480 : 320;
@@ -120,9 +307,8 @@ export async function extractFramesAtTimes(videoFile, timestamps, redactZones = 
           }
 
           await tryAutoBlur(c);
-
           const ctx = c.getContext("2d");
-          redactZones.forEach((z) =>
+          redactZones.forEach(z =>
             pixelate(ctx, (z.x / z.cw) * W, (z.y / z.ch) * H, (z.w / z.cw) * W, (z.h / z.ch) * H, 16)
           );
 
@@ -139,98 +325,9 @@ export async function extractFramesAtTimes(videoFile, timestamps, redactZones = 
   });
 }
 
-// Label each frame by its zone for Claude context
 function getZoneLabel(t, allTimes) {
   const max = Math.max(...allTimes);
   if (t <= 2.0) return "start";
   if (t >= max - 0.8) return "finish";
   return "wall-zone";
-}
-// crop: { x, y, w, h } as 0-1 ratios of the full frame -- null = full frame
-// onProgress: optional callback(framesExtracted, total)
-// withTimestamps: if true, returns [{data, time}] instead of [base64string]
-// stroke: if provided, runs MediaPipe pose annotation on each frame
-export async function extractFrames(videoFile, redactZones, count = 60, crop = null, onProgress = null, withTimestamps = false, stroke = null) {
-  // Lazy-import pose annotator only when needed (avoids loading MediaPipe CDN on every page load)
-  let annotateFrame = null;
-  if (stroke) {
-    try {
-      const poseModule = await import("./pose.js");
-      annotateFrame = poseModule.annotateFrame;
-    } catch {
-      console.warn("[pose] could not load pose module, skipping annotation");
-    }
-  }
-
-  // Scale resolution based on frame count to keep request size manageable
-  const W = count <= 10 ? 480 : 320;
-  const H = count <= 10 ? 270 : 180;
-
-  return new Promise((resolve) => {
-    const video = document.createElement("video");
-    video.src = URL.createObjectURL(videoFile);
-    const frames = [];
-
-    video.onloadedmetadata = () => {
-      const duration = video.duration;
-      const times = Array.from(
-        { length: count },
-        (_, i) => (duration / (count + 1)) * (i + 1)
-      );
-      let idx = 0;
-
-      const next = () => {
-        if (idx >= times.length) {
-          URL.revokeObjectURL(video.src);
-          resolve(frames);
-          return;
-        }
-        video.currentTime = times[idx];
-        video.onseeked = async () => {
-          const full = document.createElement("canvas");
-          full.width = W; full.height = H;
-          full.getContext("2d").drawImage(video, 0, 0, W, H);
-
-          let c;
-          if (crop) {
-            const sx = Math.round(crop.x * W);
-            const sy = Math.round(crop.y * H);
-            const sw = Math.round(crop.w * W);
-            const sh = Math.round(crop.h * H);
-            c = document.createElement("canvas");
-            c.width = W; c.height = H;
-            c.getContext("2d").drawImage(full, sx, sy, sw, sh, 0, 0, W, H);
-          } else {
-            c = full;
-          }
-
-          await tryAutoBlur(c);
-
-          const ctx = c.getContext("2d");
-          redactZones.forEach((z) =>
-            pixelate(ctx, (z.x / z.cw) * W, (z.y / z.ch) * H, (z.w / z.cw) * W, (z.h / z.ch) * H, 16)
-          );
-
-          // Run pose annotation if stroke provided and MediaPipe available
-          let anglesSummary = [];
-          if (annotateFrame) {
-            const { angles } = await annotateFrame(c, stroke);
-            anglesSummary = angles;
-          }
-
-          const data = c.toDataURL("image/jpeg", 0.72).split(",")[1];
-          if (withTimestamps) {
-            frames.push({ data, time: parseFloat(times[idx].toFixed(2)), angles: anglesSummary });
-          } else {
-            frames.push(data);
-          }
-          idx++;
-          if (onProgress) onProgress(idx, count);
-          next();
-        };
-      };
-      next();
-    };
-    video.load();
-  });
 }
