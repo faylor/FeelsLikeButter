@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "build": "cd client && npm install && npm run build",
+    "build": "cd client && npm install --include=dev && npm run build",
     "dev": "concurrently \"node server.js\" \"cd client && npm run dev\""
   },
   "dependencies": {
