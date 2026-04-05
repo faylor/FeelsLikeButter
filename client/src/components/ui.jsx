@@ -1,5 +1,5 @@
 import { T } from "../tokens.js";
-import { STROKE_ICONS } from "../constants.js";
+import { STROKE_ICONS } from "../constants/strokes.js";
 
 export function Rule({ style }) {
   return <div style={{ height: 1, background: T.rule, ...style }} />;
