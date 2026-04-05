@@ -59,7 +59,7 @@ export default function App() {
   const [pbs, setPbs]               = useState({});
   const [showProfile, setShowProfile] = useState(false);
   const [extractProgress, setExtractProgress] = useState(null);
-  const [frameCount, setFrameCount] = useState(60);
+  const [frameCount, setFrameCount] = useState(30);
 
   const accentColor = T.strokes[stroke].accent;
 
