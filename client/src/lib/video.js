@@ -363,3 +363,35 @@ export async function extractFramesAtTimes(videoFile, timestamps, redactZones = 
     video.load();
   });
 }
+
+// --- Quick 5-frame preview for swimmer confirmation --------------------------
+// Returns 5 evenly-spaced frames from the video as base64 JPEGs
+export async function extractPreviewFrames(videoFile) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    const objUrl = URL.createObjectURL(videoFile);
+    video.src = objUrl; video.muted = true; video.playsInline = true; video.preload = "auto";
+    video.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error("Video failed to load")); };
+    video.onloadedmetadata = () => {
+      const dur = video.duration;
+      if (!dur || dur < 0.5) { URL.revokeObjectURL(objUrl); reject(new Error("Video too short")); return; }
+      const times = [0.1, 0.25, 0.5, 0.75, 0.92].map(p => parseFloat((dur * p).toFixed(2)));
+      const frames = []; let idx = 0;
+      const next = () => {
+        if (idx >= times.length) { URL.revokeObjectURL(objUrl); resolve(frames); return; }
+        video.currentTime = times[idx];
+        let done = false;
+        const finish = () => { if (done) return; done = true;
+          const c = document.createElement("canvas"); c.width = 320; c.height = 180;
+          c.getContext("2d").drawImage(video, 0, 0, 320, 180);
+          frames.push({ data: c.toDataURL("image/jpeg", 0.8).split(",")[1], time: times[idx] });
+          idx++; next();
+        };
+        video.onseeked = finish;
+        setTimeout(finish, 2000);
+      };
+      next();
+    };
+    video.load();
+  });
+}
