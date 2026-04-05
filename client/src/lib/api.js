@@ -51,3 +51,68 @@ Return ONLY a valid JSON object with no surrounding text, no markdown, no code f
   console.log("[swim] overallScore:", result.overallScore);
   return result;
 }
+
+// --- Analyse video for actual timing data ------------------------------------
+// frames: [{data: base64, time: seconds}] -- timestamps are included
+// Returns split times, turn times, stroke count from the video itself
+export async function analyzeVideoTiming(timedFrames, stroke, poolLength) {
+  const frameList = timedFrames.map((f, i) =>
+    `Frame ${i + 1} at ${f.time}s`
+  ).join(", ");
+
+  const prompt = `You are an expert swimming timing analyst. You have ${timedFrames.length} frames from a ${stroke} video in a ${poolLength}m pool, captured at known timestamps.
+
+Frame timestamps: ${frameList}
+
+The frames are shown below in order, each labeled with its timestamp.
+
+Analyze these frames to identify timing events. Look for:
+- Wall touches (swimmer's hand/feet touching the wall at turns or finish)
+- Wall push-offs / breakouts (swimmer leaving the wall)
+- Stroke cycles to count strokes
+- Any visible timing boards, scorecards, or lane markers
+
+Return ONLY valid JSON, no surrounding text:
+{
+  "events": [
+    { "event": "start|wall_touch|wall_leave|finish", "timestamp": <seconds>, "confidence": "high|medium|low", "note": "<what you see>" }
+  ],
+  "strokeCount": <number or null if unclear>,
+  "strokeRateCyclesPerSec": <number or null>,
+  "visibleLengths": <how many pool lengths are visible>,
+  "calculatedTimes": {
+    "turnTime": <wall_leave.time - wall_touch.time, or null>,
+    "splitTimes": [<time for each visible 50m, or null>],
+    "totalVisibleTime": <finish.time - start.time, or null>
+  },
+  "confidence": "high|medium|low",
+  "notes": "<any caveats about what was or was not clearly visible>"
+}`;
+
+  // Build interleaved content: text label + image for each frame
+  const content = [];
+  timedFrames.forEach((f, i) => {
+    content.push({ type: "text", text: `Frame ${i + 1} at ${f.time}s:` });
+    content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: f.data } });
+  });
+  content.push({ type: "text", text: prompt });
+
+  const res = await fetch("/api/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1500,
+      messages: [{ role: "user", content }],
+    }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `API error ${res.status}`);
+
+  const text = data.content?.map(b => b.text || "").join("") || "";
+  console.log("[video-timing] raw:", text.slice(0, 200));
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("No JSON in response");
+  return JSON.parse(match[0]);
+}
