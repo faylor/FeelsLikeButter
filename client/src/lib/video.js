@@ -73,7 +73,7 @@ export async function extractTrackedFrames(
   // Start pose loading in background -- don't block frame extraction
   let poseReady = false;
   let poseModule = null;
-  const poseLoadPromise = import("./pose.js")
+  import("./pose.js")
     .then(async pm => {
       poseModule = pm;
       await pm.initPoseDetector();
@@ -84,18 +84,28 @@ export async function extractTrackedFrames(
 
   if (onProgress) onProgress(0, 1, "Loading video...");
 
-  // Load video metadata
-  const { duration } = await new Promise((res, rej) => {
-    const v = document.createElement("video");
-    v.muted = true; v.playsInline = true; v.preload = "metadata";
-    v.onerror = () => rej(new Error("Video failed to load"));
-    v.onloadedmetadata = () => res({ duration: v.duration });
-    v.src = URL.createObjectURL(videoFile);
-    v.load();
-    setTimeout(() => rej(new Error("Video load timeout")), 15000);
+  // Single video element for everything -- avoids double-load crash on mobile
+  const objUrl = URL.createObjectURL(videoFile);
+  const video  = document.createElement("video");
+  video.src        = objUrl;
+  video.muted      = true;
+  video.playsInline = true;
+  video.preload    = "auto";
+
+  // Wait for metadata with timeout
+  const duration = await new Promise((res, rej) => {
+    let done = false;
+    const finish = (dur) => { if (!done) { done = true; res(dur); } };
+    video.onloadedmetadata = () => finish(video.duration);
+    video.onerror = () => { URL.revokeObjectURL(objUrl); rej(new Error("Video failed to load -- try a different format")); };
+    video.load();
+    setTimeout(() => finish(video.duration || 0), 12000);
   });
 
-  if (!duration || duration < 0.3) throw new Error("Video too short");
+  if (!duration || duration < 0.3) {
+    URL.revokeObjectURL(objUrl);
+    throw new Error("Video too short or could not be read");
+  }
 
   // Build timestamp list
   const maxFrames = 80;
@@ -110,21 +120,6 @@ export async function extractTrackedFrames(
 
   console.log(`[video] ${times.length} frames over ${duration.toFixed(1)}s`);
   if (onProgress) onProgress(0, times.length, `Extracting ${times.length} frames...`);
-
-  // Reuse a single video element for all seeks
-  const video = document.createElement("video");
-  const objUrl = URL.createObjectURL(videoFile);
-  video.src = objUrl;
-  video.muted = true;
-  video.playsInline = true;
-  video.preload = "auto";
-
-  await new Promise((res, rej) => {
-    video.onloadedmetadata = res;
-    video.onerror = () => rej(new Error("Video element failed"));
-    video.load();
-    setTimeout(res, 10000); // fallback
-  });
 
   // Tracking state -- initialise from confirmed seed if available
   let targetCx = seedBb ? seedBb.cx : (initialCrop?.x || 0) + (initialCrop?.w || 0.5) / 2;
@@ -438,126 +433,98 @@ export async function extractFramesAtTimes(videoFile, timestamps, redactZones = 
 // --- Quick 5-frame preview with pose bounding boxes for swimmer selection ----
 // Samples from first 5 seconds, runs pose detection, draws numbered boxes
 // Returns [{data, time, poses: [{bb, color, idx}]}]
+// --- Quick 5-frame preview with pose bounding boxes for swimmer selection ----
 export async function extractPreviewFrames(videoFile) {
   const OUT_W = 640, OUT_H = 360;
+  const BOX_COLORS = ["#E63946", "#2196F3", "#FF9800", "#9C27B0"];
 
-  // Load pose module
-  let poseModule = null;
-  try {
-    poseModule = await import("./pose.js");
-    await poseModule.initPoseDetector();
-  } catch (e) {
-    console.warn("[preview] pose unavailable:", e.message);
+  // Load pose in background -- don't block video loading
+  let poseModule = null, poseReady = false;
+  import("./pose.js")
+    .then(async pm => { poseModule = pm; await pm.initPoseDetector(); poseReady = true; console.log("[preview] pose ready"); })
+    .catch(e => console.warn("[preview] pose unavailable:", e.message));
+
+  // Single video element
+  const objUrl = URL.createObjectURL(videoFile);
+  const video  = document.createElement("video");
+  video.src = objUrl; video.muted = true; video.playsInline = true; video.preload = "auto";
+
+  const dur = await new Promise((res, rej) => {
+    let done = false;
+    const finish = d => { if (!done) { done = true; res(d || 0); } };
+    video.onloadedmetadata = () => finish(video.duration);
+    video.onerror = () => { URL.revokeObjectURL(objUrl); rej(new Error("Video failed to load -- try MP4 or MOV format")); };
+    video.load();
+    setTimeout(() => finish(video.duration || 0), 10000);
+  });
+
+  if (!dur || dur < 0.3) { URL.revokeObjectURL(objUrl); throw new Error("Video too short"); }
+
+  const span  = Math.min(5.0, dur - 0.1);
+  const times = [0, 0.25, 0.5, 0.75, 1.0]
+    .map(p => parseFloat(Math.max(0.1, p * span).toFixed(2)));
+
+  const results = [];
+
+  for (const t of times) {
+    await new Promise(res => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; res(); } };
+      video.onseeked = finish; video.currentTime = t;
+      setTimeout(finish, 2500);
+    });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = OUT_W; canvas.height = OUT_H;
+    canvas.getContext("2d").drawImage(video, 0, 0, OUT_W, OUT_H);
+
+    let detectedPoses = [];
+    if (poseReady && poseModule) {
+      try {
+        const poses = await poseModule.detectPoses(canvas);
+        detectedPoses = poses
+          .map((landmarks, i) => ({ landmarks, bb: poseModule.getPoseBoundingBox(landmarks), idx: i }))
+          .filter(p => p.bb && p.bb.confidence > 0.25)
+          .slice(0, 4);
+      } catch (e) { console.warn("[preview] detect error:", e.message); }
+    }
+
+    // Draw bounding boxes on frame
+    const ctx = canvas.getContext("2d");
+    const BOX_COLS = BOX_COLORS;
+    detectedPoses.forEach(({ bb, idx }) => {
+      const col = BOX_COLS[idx % BOX_COLS.length];
+      const x = bb.x * OUT_W, y = bb.y * OUT_H, w = bb.w * OUT_W, h = bb.h * OUT_H;
+      ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.strokeRect(x, y, w, h);
+      const label = `Person ${idx + 1}`;
+      ctx.font = "bold 13px sans-serif";
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = col; ctx.fillRect(x, y - 22, tw + 12, 22);
+      ctx.fillStyle = "#fff"; ctx.fillText(label, x + 6, y - 6);
+    });
+
+    if (detectedPoses.length === 0) {
+      ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(0, OUT_H/2 - 18, OUT_W, 36);
+      ctx.fillStyle = "#fff"; ctx.font = "13px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText(poseReady ? "No person detected" : "Pose detector loading...", OUT_W/2, OUT_H/2 + 5);
+      ctx.textAlign = "left";
+    }
+
+    ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0, OUT_H - 22, 70, 22);
+    ctx.fillStyle = "#fff"; ctx.font = "10px sans-serif";
+    ctx.fillText(`${t.toFixed(1)}s`, 6, OUT_H - 7);
+
+    results.push({
+      data:  canvas.toDataURL("image/jpeg", 0.85).split(",")[1],
+      time:  t,
+      poses: detectedPoses.map(p => ({
+        bb: p.bb, idx: p.idx,
+        color: BOX_COLS[p.idx % BOX_COLS.length],
+        landmarks: p.landmarks,
+      })),
+    });
   }
 
-  return new Promise((resolve, reject) => {
-    const video = document.createElement("video");
-    const objUrl = URL.createObjectURL(videoFile);
-    video.src = objUrl; video.muted = true; video.playsInline = true; video.preload = "auto";
-    video.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error("Video failed to load")); };
-
-    video.onloadedmetadata = async () => {
-      const dur = video.duration;
-      if (!dur || dur < 0.3) { URL.revokeObjectURL(objUrl); reject(new Error("Video too short")); return; }
-
-      // 5 frames spread across first 5 seconds (or whole video if shorter)
-      const window = Math.min(5.0, dur - 0.2);
-      const times = [0, 0.25, 0.5, 0.75, 1.0].map(p =>
-        parseFloat(Math.max(0.1, p * window).toFixed(2))
-      );
-
-      const results = [];
-
-      for (const t of times) {
-        await new Promise(res => {
-          let done = false;
-          const finish = () => { if (!done) { done = true; res(); } };
-          video.onseeked = finish;
-          video.currentTime = t;
-          setTimeout(finish, 2000);
-        });
-
-        // Capture frame
-        const canvas = document.createElement("canvas");
-        canvas.width = OUT_W; canvas.height = OUT_H;
-        canvas.getContext("2d").drawImage(video, 0, 0, OUT_W, OUT_H);
-
-        // Detect poses
-        let detectedPoses = [];
-        if (poseModule) {
-          try {
-            const poses = await poseModule.detectPoses(canvas);
-            detectedPoses = poses
-              .map((landmarks, i) => ({
-                landmarks,
-                bb: poseModule.getPoseBoundingBox(landmarks),
-                idx: i,
-              }))
-              .filter(p => p.bb && p.bb.confidence > 0.25)
-              .slice(0, 4); // max 4 boxes shown
-          } catch (e) {
-            console.warn("[preview] detect error:", e.message);
-          }
-        }
-
-        // Draw bounding boxes on the frame
-        const ctx = canvas.getContext("2d");
-        const BOX_COLORS = ["#E63946", "#2196F3", "#FF9800", "#9C27B0"];
-
-        detectedPoses.forEach(({ bb, idx }) => {
-          const col = BOX_COLORS[idx % BOX_COLORS.length];
-          const x = bb.x * OUT_W, y = bb.y * OUT_H;
-          const w = bb.w * OUT_W, h = bb.h * OUT_H;
-
-          // Box
-          ctx.strokeStyle = col;
-          ctx.lineWidth = 3;
-          ctx.strokeRect(x, y, w, h);
-
-          // Label
-          const label = `Person ${idx + 1}`;
-          ctx.font = "bold 13px sans-serif";
-          const tw = ctx.measureText(label).width;
-          ctx.fillStyle = col;
-          ctx.fillRect(x, y - 22, tw + 12, 22);
-          ctx.fillStyle = "#fff";
-          ctx.fillText(label, x + 6, y - 6);
-        });
-
-        // If no poses detected, note it
-        if (detectedPoses.length === 0) {
-          ctx.fillStyle = "rgba(0,0,0,0.6)";
-          ctx.fillRect(0, OUT_H/2 - 18, OUT_W, 36);
-          ctx.fillStyle = "#fff";
-          ctx.font = "13px sans-serif";
-          ctx.textAlign = "center";
-          ctx.fillText("No person detected", OUT_W/2, OUT_H/2 + 5);
-          ctx.textAlign = "left";
-        }
-
-        // Timestamp
-        ctx.fillStyle = "rgba(0,0,0,0.6)";
-        ctx.fillRect(0, OUT_H - 22, 70, 22);
-        ctx.fillStyle = "#fff";
-        ctx.font = "10px sans-serif";
-        ctx.fillText(`${t.toFixed(1)}s`, 6, OUT_H - 7);
-
-        results.push({
-          data:   canvas.toDataURL("image/jpeg", 0.85).split(",")[1],
-          time:   t,
-          poses:  detectedPoses.map(p => ({
-            bb:    p.bb,
-            idx:   p.idx,
-            color: BOX_COLORS[p.idx % BOX_COLORS.length],
-            landmarks: p.landmarks,
-          })),
-        });
-      }
-
-      URL.revokeObjectURL(objUrl);
-      resolve(results);
-    };
-
-    video.load();
-  });
+  URL.revokeObjectURL(objUrl);
+  return results;
 }
