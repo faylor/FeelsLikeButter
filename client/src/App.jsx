@@ -12,6 +12,7 @@ import { HistoryView }   from "./components/HistoryView.jsx";
 import { TargetsView }   from "./components/TargetsView.jsx";
 import { ProfileSetup }  from "./components/ProfileSetup.jsx";
 import { TimingAnalysis } from "./components/TimingAnalysis.jsx";
+import { VideoPreview }  from "./components/VideoPreview.jsx";
 import { Nav }           from "./components/Nav.jsx";
 
 export default function App() {
@@ -47,6 +48,7 @@ export default function App() {
   const [step, setStep]             = useState("upload");
   const [crop, setCrop]             = useState(null);
   const [privacyZones, setPrivacyZones] = useState([]);
+  const [previewTimes, setPreviewTimes] = useState(null); // confirmed good timestamps
   const [result, setResult]         = useState(null);
   const [error, setError]           = useState(null);
   const [sessions, setSessions]     = useState([]);
@@ -66,22 +68,27 @@ export default function App() {
     setCrop(selectedCrop); setStep("privacy");
   };
 
-  // -- Privacy confirm: start processing ------------------------------------
+  // -- Privacy confirm: go to preview step ----------------------------------
   const handlePrivacyConfirm = async (zones) => {
     setPrivacyZones(zones);
+    setStep("preview");
+  };
+
+  // -- Preview confirmed: start full processing -----------------------------
+  const handlePreviewConfirm = async (goodTimes) => {
+    setPreviewTimes(goodTimes);
     setStep("processing");
     setProcessProgress(null);
     setError(null);
     try {
       const frames = await extractTrackedFrames(
-        videoFile, crop, zones,
-        0.5,   // 1 frame every 0.5s -- review screen handles count selection
-        stroke,
+        videoFile, crop, privacyZones,
+        0.5, stroke,
         (done, total, phase) => setProcessProgress({ done, total, phase })
       );
       setProcessedFrames(frames);
       setProcessProgress(null);
-      setStep("review"); // show frame review before sending to AI
+      setStep("review");
     } catch (e) {
       setError(`Processing failed -- ${e.message}`);
       setProcessProgress(null);
@@ -199,8 +206,11 @@ export default function App() {
           processProgress={processProgress}
           processedFrames={processedFrames}
           approvedFrames={approvedFrames}
+          crop={crop}
+          privacyZones={privacyZones}
           onLaneConfirm={handleLaneConfirm}
           onPrivacyConfirm={handlePrivacyConfirm}
+          onPreviewConfirm={handlePreviewConfirm}
           onReviewConfirm={handleReviewConfirm}
           onReviewBack={() => setStep("privacy")}
           onSave={handleSave}
