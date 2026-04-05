@@ -6,9 +6,10 @@ import { LaneSelector } from "./LaneSelector.jsx";
 import { TechniqueExample } from "./TechniqueExample.jsx";
 
 // --- Analyzing spinner --------------------------------------------------------
-function AnalyzingScreen({ extractProgress }) {
+function AnalyzingScreen({ extractProgress, frameCount }) {
   const isExtracting = extractProgress !== null;
   const pct = extractProgress ? Math.round((extractProgress.done / extractProgress.total) * 100) : 0;
+  const total = extractProgress?.total ?? frameCount ?? 60;
 
   return (
     <div style={{ padding: "80px 24px", textAlign: "center" }}>
@@ -28,7 +29,7 @@ function AnalyzingScreen({ extractProgress }) {
         </div>
       ) : (
         <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.8, margin: 0 }}>
-          Sending 60 frames to AI coach<br />This takes 20--40 seconds
+          Sending {total} frames to AI coach<br />This takes {total >= 30 ? "20--40" : "5--15"} seconds
         </p>
       )}
 
@@ -202,7 +203,7 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
   if (step === "privacy") {
     return <PrivacyEditor videoFile={videoFile} onConfirm={onPrivacyConfirm} onBack={() => setStep("select")} accent={sc.accent} />;
   }
-  if (step === "analyzing") return <AnalyzingScreen extractProgress={extractProgress} />;
+  if (step === "analyzing") return <AnalyzingScreen extractProgress={extractProgress} frameCount={frameCount} />;
 
   const MODES = [
     { key: "quick",    label: "Quick",    sub: "8 frames" },
