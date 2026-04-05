@@ -317,7 +317,7 @@ export function TargetsView({ profile, pbs, onSetupProfile, sessions }) {
           Tap any event to see required splits, flip turn analysis, and gap to each standard. Times from Surrey County Age Group Championships 2027.
         </div>
       </div>
-      </div>  {/* end targets sub-tab */}
+      </div>
     </div>
   );
 }
