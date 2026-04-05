@@ -93,11 +93,19 @@ export async function extractTrackedFrames(
     const objUrl = URL.createObjectURL(videoFile);
     video.src = objUrl;
     video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
 
     video.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error("Video failed to load")); };
 
     video.onloadedmetadata = async () => {
       const duration = video.duration;
+      if (!duration || duration < 0.5) {
+        URL.revokeObjectURL(objUrl);
+        reject(new Error("Video too short or invalid"));
+        return;
+      }
+
       // Build timestamp list -- every intervalSecs, capped at 80 frames
       const maxFrames = 80;
       const step = Math.max(intervalSecs, duration / maxFrames);
@@ -105,30 +113,32 @@ export async function extractTrackedFrames(
       for (let t = 0.3; t < duration - 0.1; t += step) {
         times.push(parseFloat(t.toFixed(2)));
       }
-      // Always include near-start and near-end
-      if (times[0] > 0.3) times.unshift(0.3);
+      if (!times.length || times[0] > 0.5) times.unshift(0.3);
       const lastT = parseFloat((duration - 0.3).toFixed(2));
       if (times[times.length - 1] < lastT) times.push(lastT);
 
       console.log(`[video] extracting ${times.length} frames over ${duration.toFixed(1)}s`);
-      if (onProgress) onProgress(0, times.length, "Starting...");
+      if (onProgress) onProgress(0, times.length, `Extracting ${times.length} frames...`);
 
       // Tracking state in normalised 0-1 space
       let targetCx = (initialCrop?.x || 0) + (initialCrop?.w || 0.5) / 2;
       let targetCy = (initialCrop?.y || 0) + (initialCrop?.h || 0.5) / 2;
       let smoothCx = null, smoothCy = null;
       let smoothW  = null, smoothH  = null;
-      let lastGoodCrop = null; // fallback if tracking lost
+      let lastGoodCrop = null;
       let consecutiveLost = 0;
 
       for (let idx = 0; idx < times.length; idx++) {
         const t = times[idx];
-        if (onProgress) onProgress(idx, times.length, `Tracking frame ${idx + 1} / ${times.length}`);
 
-        // Seek video
+        // Seek with timeout fallback -- onseeked can silently fail on mobile
         await new Promise(res => {
+          let done = false;
+          const finish = () => { if (!done) { done = true; res(); } };
+          video.onseeked = finish;
           video.currentTime = t;
-          video.onseeked = res;
+          // Fallback: if onseeked hasn't fired in 3s, continue anyway
+          setTimeout(finish, 3000);
         });
 
         try {
@@ -275,6 +285,9 @@ export async function extractTrackedFrames(
           console.error(`[video] frame ${idx} error:`, e.message);
           frames.push({ data: null, frameIndex: idx, timestamp: t, tracked: false, angles: [], approved: false });
         }
+
+        // Update progress after frame is complete
+        if (onProgress) onProgress(idx + 1, times.length, `Frame ${idx + 1} / ${times.length}${tracked ? " (tracked)" : ""}`);
       }
 
       URL.revokeObjectURL(objUrl);
