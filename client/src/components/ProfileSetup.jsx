@@ -131,6 +131,10 @@ export function ProfileSetup({ profile, pbs, onSave, onCancel }) {
   if (page === "pbs") return (
     <div style={{ background: T.white, minHeight: "100vh" }}>
       <div style={{ padding: "32px 24px 20px" }}>
+        {/* Back button always visible */}
+        <button onClick={() => setPage("profile")} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 16px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+          <- Back
+        </button>
         <Label style={{ color: T.red, marginBottom: 6 }}>Personal Bests</Label>
         <div style={{ fontSize: 22, fontWeight: 300, letterSpacing: "-0.02em", color: T.black, marginBottom: 20 }}>
           {form.name}'s Times
@@ -182,6 +186,10 @@ export function ProfileSetup({ profile, pbs, onSave, onCancel }) {
   return (
     <div style={{ background: T.white, minHeight: "100vh" }}>
       <div style={{ padding: "32px 24px 20px" }}>
+        {/* Back/cancel always visible */}
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 16px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+          <- Home
+        </button>
         <Label style={{ color: T.red, marginBottom: 6 }}>Athlete Profile</Label>
         <div style={{ fontSize: 22, fontWeight: 300, letterSpacing: "-0.02em", color: T.black, marginBottom: 20 }}>
           {profile ? "Edit Profile" : "Set Up Profile"}
@@ -226,12 +234,8 @@ export function ProfileSetup({ profile, pbs, onSave, onCancel }) {
         <Btn
           onClick={() => setPage("pbs")}
           style={{ opacity: profileValid ? 1 : 0.4, pointerEvents: profileValid ? "auto" : "none" }}>
-          Next -- Enter Personal Bests 
+          Next -- Enter Personal Bests
         </Btn>
-
-        {onCancel && (
-          <Btn onClick={onCancel} variant="secondary" style={{ marginTop: 10 }}>Cancel</Btn>
-        )}
       </div>
       <div style={{ height: 32 }} />
     </div>
