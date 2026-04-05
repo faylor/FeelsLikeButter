@@ -28,7 +28,7 @@ export function FrameReview({ frames, stroke, onConfirm, onBack }) {
   const trackedCount = reviewed.filter(f => f.tracked).length;
 
   return (
-    <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 120 }}>
+    <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 160 }}>
 
       {/* Header */}
       <div style={{ padding: "32px 24px 16px" }}>
@@ -149,7 +149,7 @@ export function FrameReview({ frames, stroke, onConfirm, onBack }) {
       )}
 
       {/* Action bar */}
-      <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.white, borderTop: `1px solid ${T.rule}`, padding: "14px 24px" }}>
+      <div style={{ position: "fixed", bottom: 72, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.white, borderTop: `1px solid ${T.rule}`, padding: "14px 24px" }}>
         {approved.length < 4 && (
           <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: "#C4610A", marginBottom: 8, textAlign: "center" }}>
             Approve at least 4 frames to continue
