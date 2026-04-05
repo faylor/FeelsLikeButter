@@ -208,28 +208,20 @@ function UploadStep({ stroke, videoFile, error, onStrokeChange, onFileChange, on
 }
 
 // --- AnalyzeView --------------------------------------------------------------
-export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, setStep, result, error, note, setNote, processProgress, frameCount, setFrameCount, processedFrames, approvedFrames, onLaneConfirm, onPrivacyConfirm, onReviewConfirm, onReviewBack, onSave, profile, pbs }) {
+export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, setStep, result, error, note, setNote, processProgress, processedFrames, approvedFrames, onLaneConfirm, onPrivacyConfirm, onReviewConfirm, onReviewBack, onSave, profile, pbs }) {
   const sc = T.strokes[stroke];
 
   if (step === "select") {
     return <LaneSelector videoFile={videoFile} onConfirm={onLaneConfirm} onBack={() => setStep("upload")} accent={sc.accent} />;
   }
   if (step === "privacy") {
-    return <PrivacyEditor videoFile={videoFile} onConfirm={onPrivacyConfirm} onBack={() => setStep("select")} accent={sc.accent} frameCount={frameCount} />;
+    return <PrivacyEditor videoFile={videoFile} onConfirm={onPrivacyConfirm} onBack={() => setStep("select")} accent={sc.accent} frameCount={approvedFrames?.length || 20} />;
   }
-  if (step === "processing") return <ProcessingScreen progress={processProgress} frameCount={frameCount} />;
+  if (step === "processing") return <ProcessingScreen progress={processProgress} />;
   if (step === "review") {
     return <FrameReview frames={processedFrames} stroke={stroke} onConfirm={onReviewConfirm} onBack={onReviewBack} />;
   }
-  if (step === "analyzing") return <AnalyzingScreen frameCount={approvedFrames?.length ?? frameCount} />;
-
-  const MODES = [
-    { key: "quick",    label: "Quick",    sub: "8 frames" },
-    { key: "standard", label: "Standard", sub: "30 frames" },
-    { key: "deep",     label: "Deep",     sub: "60 frames" },
-  ];
-
-  const modeKey = frameCount === 8 ? "quick" : frameCount === 30 ? "standard" : "deep";
+  if (step === "analyzing") return <AnalyzingScreen frameCount={approvedFrames?.length} />;
 
   return (
     <div>
@@ -247,33 +239,6 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
         {Object.keys(T.strokes).map((s) => (
           <StrokeChip key={s} stroke={s} active={stroke === s} onClick={() => setStroke(s)} />
         ))}
-      </div>
-
-      {/* Mode selector */}
-      <div style={{ padding: "0 24px 20px" }}>
-        <Label style={{ marginBottom: 10 }}>Analysis mode</Label>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6 }}>
-          {MODES.map(m => {
-            const active = modeKey === m.key;
-            return (
-              <button key={m.key}
-                onClick={() => {
-                  const counts = { quick: 8, standard: 30, deep: 60 };
-                  setFrameCount(counts[m.key]);
-                }}
-                style={{
-                  padding: "10px 6px", border: `1px solid ${active ? T.dark : T.rule}`,
-                  background: active ? T.dark : "none",
-                  color: active ? "#fff" : T.mid,
-                  cursor: "pointer", textAlign: "center",
-                  fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif",
-                }}>
-                <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 2 }}>{m.label}</div>
-                <div style={{ fontSize: 9, letterSpacing: "0.04em", opacity: 0.75 }}>{m.sub}</div>
-              </button>
-            );
-          })}
-        </div>
       </div>
 
       <UploadStep
