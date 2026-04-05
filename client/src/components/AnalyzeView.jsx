@@ -4,39 +4,53 @@ import { Rule, Label, ScoreRing, StatusMark, ThinBar, StrokeChip, Btn } from "./
 import { PrivacyEditor } from "./PrivacyEditor.jsx";
 import { LaneSelector } from "./LaneSelector.jsx";
 import { TechniqueExample } from "./TechniqueExample.jsx";
+import { FrameReview } from "./FrameReview.jsx";
 
-// --- Analyzing spinner --------------------------------------------------------
-function AnalyzingScreen({ extractProgress, frameCount }) {
-  const isExtracting = extractProgress !== null;
-  const pct = extractProgress ? Math.round((extractProgress.done / extractProgress.total) * 100) : 0;
-  const total = extractProgress?.total ?? frameCount ?? 60;
-
+// --- Processing screen --------------------------------------------------------
+function ProcessingScreen({ progress, frameCount }) {
+  const phase = progress?.phase || "Initialising...";
+  const pct   = progress ? Math.round((progress.done / progress.total) * 100) : 0;
   return (
     <div style={{ padding: "80px 24px", textAlign: "center" }}>
       <div style={{ width: 32, height: 1, background: T.dark, margin: "0 auto 32px" }} />
-      <Label style={{ display: "block", marginBottom: 8, color: T.black }}>
-        {isExtracting ? "Extracting frames" : "Analysing"}
-      </Label>
-
-      {isExtracting ? (
-        <div style={{ margin: "16px auto 0", maxWidth: 240 }}>
-          <div style={{ height: 2, background: T.rule, borderRadius: 1, overflow: "hidden", marginBottom: 10 }}>
-            <div style={{ width: `${pct}%`, height: "100%", background: T.dark, transition: "width 0.2s ease", borderRadius: 1 }} />
+      <Label style={{ display: "block", marginBottom: 8, color: T.black }}>Processing Video</Label>
+      <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.8, margin: "0 0 20px" }}>
+        {phase}
+      </p>
+      {progress && (
+        <div style={{ maxWidth: 240, margin: "0 auto" }}>
+          <div style={{ height: 2, background: T.rule, borderRadius: 1, overflow: "hidden", marginBottom: 8 }}>
+            <div style={{ width: `${pct}%`, height: "100%", background: T.dark, transition: "width 0.3s ease" }} />
           </div>
-          <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, margin: 0 }}>
-            {extractProgress.done} / {extractProgress.total} frames -- detecting pose
-          </p>
+          <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted }}>
+            {progress.done} / {progress.total} frames
+          </div>
         </div>
-      ) : (
-        <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.8, margin: 0 }}>
-          Sending {total} frames to AI coach<br />This takes {total >= 30 ? "20--40" : "5--15"} seconds
-        </p>
       )}
+      <div style={{ marginTop: 24, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#007A5E" }} />
+        <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: "#007A5E", letterSpacing: "0.06em" }}>
+          Tracking swimmer. Applying kinematics.
+        </span>
+      </div>
+    </div>
+  );
+}
 
+// --- Analyzing spinner --------------------------------------------------------
+function AnalyzingScreen({ frameCount }) {
+  return (
+    <div style={{ padding: "80px 24px", textAlign: "center" }}>
+      <div style={{ width: 32, height: 1, background: T.dark, margin: "0 auto 32px" }} />
+      <Label style={{ display: "block", marginBottom: 8, color: T.black }}>Analysing</Label>
+      <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.8, margin: 0 }}>
+        Sending {frameCount || "approved"} frames to AI coach<br />
+        This takes {(frameCount || 20) >= 20 ? "20--40" : "5--15"} seconds
+      </p>
       <div style={{ marginTop: 20, display: "inline-flex", alignItems: "center", gap: 6 }}>
         <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#007A5E" }} />
         <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: "#007A5E", letterSpacing: "0.06em" }}>
-          Faces obscured before upload
+          Faces obscured. Kinematics annotated.
         </span>
       </div>
     </div>
@@ -193,68 +207,8 @@ function UploadStep({ stroke, videoFile, error, onStrokeChange, onFileChange, on
   );
 }
 
-// --- Annotated frame viewer ---------------------------------------------------
-function FrameViewer({ frames }) {
-  const [enlarged, setEnlarged] = useState(null);
-  if (!frames || frames.length === 0) return null;
-
-  return (
-    <div style={{ marginBottom: 24 }}>
-      <Label style={{ marginBottom: 10, padding: "0 24px" }}>
-        Frames sent to AI ({frames.length})
-      </Label>
-
-      {/* Thumbnail strip */}
-      <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "0 24px 8px", scrollbarWidth: "none" }}>
-        {frames.map((b64, i) => (
-          <img
-            key={i}
-            src={`data:image/jpeg;base64,${b64}`}
-            onClick={() => setEnlarged(i)}
-            style={{ height: 60, width: "auto", flexShrink: 0, border: `1px solid ${T.rule}`, cursor: "pointer", objectFit: "cover" }}
-            alt={`Frame ${i + 1}`}
-          />
-        ))}
-      </div>
-      <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted, padding: "0 24px" }}>
-        Tap any frame to enlarge. Skeleton overlay = detected pose. Angle labels in red.
-      </div>
-
-      {/* Enlarged modal */}
-      {enlarged !== null && (
-        <div
-          onClick={() => setEnlarged(null)}
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 200, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <img
-            src={`data:image/jpeg;base64,${frames[enlarged]}`}
-            style={{ maxWidth: "100%", maxHeight: "75vh", objectFit: "contain" }}
-            alt={`Frame ${enlarged + 1}`}
-          />
-          <div style={{ display: "flex", alignItems: "center", gap: 24, marginTop: 16 }}>
-            <button onClick={(e) => { e.stopPropagation(); setEnlarged(i => Math.max(0, i - 1)); }}
-              style={{ background: "none", border: `1px solid rgba(255,255,255,0.3)`, color: "#fff", padding: "8px 16px", fontSize: 12, cursor: "pointer" }}>
-              &larr;
-            </button>
-            <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: "rgba(255,255,255,0.6)" }}>
-              {enlarged + 1} / {frames.length}
-            </span>
-            <button onClick={(e) => { e.stopPropagation(); setEnlarged(i => Math.min(frames.length - 1, i + 1)); }}
-              style={{ background: "none", border: `1px solid rgba(255,255,255,0.3)`, color: "#fff", padding: "8px 16px", fontSize: 12, cursor: "pointer" }}>
-              &rarr;
-            </button>
-          </div>
-          <button onClick={() => setEnlarged(null)}
-            style={{ marginTop: 12, background: "none", border: "none", color: "rgba(255,255,255,0.4)", fontSize: 11, cursor: "pointer", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", letterSpacing: "0.08em" }}>
-            CLOSE
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // --- AnalyzeView --------------------------------------------------------------
-export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, setStep, result, error, note, setNote, extractProgress, frameCount, setFrameCount, analysedFrames, onLaneConfirm, onPrivacyConfirm, onSave, profile, pbs }) {
+export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, setStep, result, error, note, setNote, processProgress, frameCount, setFrameCount, processedFrames, approvedFrames, onLaneConfirm, onPrivacyConfirm, onReviewConfirm, onReviewBack, onSave, profile, pbs }) {
   const sc = T.strokes[stroke];
 
   if (step === "select") {
@@ -263,7 +217,11 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
   if (step === "privacy") {
     return <PrivacyEditor videoFile={videoFile} onConfirm={onPrivacyConfirm} onBack={() => setStep("select")} accent={sc.accent} frameCount={frameCount} />;
   }
-  if (step === "analyzing") return <AnalyzingScreen extractProgress={extractProgress} frameCount={frameCount} />;
+  if (step === "processing") return <ProcessingScreen progress={processProgress} frameCount={frameCount} />;
+  if (step === "review") {
+    return <FrameReview frames={processedFrames} stroke={stroke} onConfirm={onReviewConfirm} onBack={onReviewBack} />;
+  }
+  if (step === "analyzing") return <AnalyzingScreen frameCount={approvedFrames?.length ?? frameCount} />;
 
   const MODES = [
     { key: "quick",    label: "Quick",    sub: "8 frames" },
@@ -329,7 +287,23 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
 
       {step === "result" && result && (
         <div>
-          <FrameViewer frames={analysedFrames} />
+          {/* Approved frames strip */}
+          {approvedFrames?.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 10, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", padding: "12px 24px 8px" }}>
+                {approvedFrames.length} frames analysed
+              </div>
+              <div style={{ display: "flex", gap: 4, overflowX: "auto", padding: "0 24px 4px", scrollbarWidth: "none" }}>
+                {approvedFrames.map((f, i) => (
+                  <img key={i}
+                    src={`data:image/jpeg;base64,${f.data}`}
+                    style={{ height: 56, width: "auto", flexShrink: 0, border: `1px solid ${f.tracked ? "#007A5E" : T.rule}`, objectFit: "cover" }}
+                    alt={`Frame ${i + 1}`}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
           <div style={{ padding: "0 24px" }}>
             <ResultPanel result={result} stroke={stroke} note={note} onNoteChange={setNote} onSave={onSave} />
           </div>
