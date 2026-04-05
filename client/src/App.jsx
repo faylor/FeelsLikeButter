@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { T } from "./tokens.js";
 import { STROKE_CHECKLISTS } from "./constants.js";
 import { loadSessions, saveSessions, loadProfile, saveProfile, loadPbs, savePbs } from "./lib/storage.js";
@@ -43,7 +43,7 @@ export default function App() {
       setResult(r);
       setStep("result");
     } catch (e) {
-      setError(`Analysis failed — ${e.message}`);
+      setError(`Analysis failed -- ${e.message}`);
       setStep("upload");
     }
   };
@@ -60,6 +60,19 @@ export default function App() {
     setNote(""); setResult(null); setVideoFile(null); setCrop(null);
     setStep("upload"); setView("history");
   };
+
+  // -- Browser back button support for profile overlay -------------------------
+  useEffect(() => {
+    if (showProfile) {
+      window.history.pushState({ showProfile: true }, "");
+    }
+  }, [showProfile]);
+
+  useEffect(() => {
+    const onPop = () => { if (showProfile) setShowProfile(false); };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [showProfile]);
 
   // -- Profile save -----------------------------------------------------------
   const handleProfileSave = ({ profile: p, pbs: b }) => {
@@ -86,7 +99,7 @@ export default function App() {
         <ProfileSetup
           profile={profile} pbs={pbs}
           onSave={handleProfileSave}
-          onCancel={profile ? () => setShowProfile(false) : null}
+          onCancel={() => setShowProfile(false)}
         />
       </div>
     );
