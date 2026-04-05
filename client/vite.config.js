@@ -4,9 +4,13 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   define: {
-    __BUILD_DATE__:                    JSON.stringify(new Date().toISOString()),
+    __BUILD_DATE__:                                    JSON.stringify(new Date().toISOString()),
     "import.meta.env.VITE_SUPABASE_URL":             JSON.stringify(process.env.SUPABASE_URL || ""),
     "import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY": JSON.stringify(process.env.SUPABASE_PUBLISHABLE_KEY || ""),
+  },
+  // MediaPipe ships WASM -- exclude from Vite's pre-bundling
+  optimizeDeps: {
+    exclude: ["@mediapipe/tasks-vision"],
   },
   server: {
     port: 5173,
@@ -20,5 +24,9 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    // Don't try to bundle mediapipe WASM files
+    rollupOptions: {
+      external: [],
+    },
   },
 });
