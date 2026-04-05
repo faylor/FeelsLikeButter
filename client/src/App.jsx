@@ -25,6 +25,8 @@ export default function App() {
   const [profile, setProfile]     = useState(() => loadProfile());
   const [pbs, setPbs]             = useState(() => loadPbs());
   const [showProfile, setShowProfile] = useState(false);
+  const [extractProgress, setExtractProgress] = useState(null);
+  const [frameCount, setFrameCount]           = useState(60); // { done, total }
 
   const accentColor = T.strokes[stroke].accent;
 
@@ -36,14 +38,20 @@ export default function App() {
 
   const handlePrivacyConfirm = async (zones) => {
     setStep("analyzing");
+    setExtractProgress(null);
     setError(null);
     try {
-      const frames = await extractFrames(videoFile, zones, 4, crop);
+      const frames = await extractFrames(
+        videoFile, zones, frameCount, crop,
+        (done, total) => setExtractProgress({ done, total })
+      );
+      setExtractProgress(null);
       const r = await analyzeWithClaude(frames, stroke, STROKE_CHECKLISTS[stroke]);
       setResult(r);
       setStep("result");
     } catch (e) {
       setError(`Analysis failed -- ${e.message}`);
+      setExtractProgress(null);
       setStep("upload");
     }
   };
@@ -123,9 +131,12 @@ export default function App() {
           step={step} setStep={setStep}
           result={result} error={error}
           note={note} setNote={setNote}
+          extractProgress={extractProgress}
+          frameCount={frameCount} setFrameCount={setFrameCount}
           onLaneConfirm={handleLaneConfirm}
           onPrivacyConfirm={handlePrivacyConfirm}
           onSave={handleSave}
+          profile={profile} pbs={pbs}
         />
       )}
       {view === "history" && <HistoryView sessions={sessions} />}
