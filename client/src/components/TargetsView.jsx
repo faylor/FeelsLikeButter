@@ -3,10 +3,11 @@ import { T } from "../tokens.js";
 import { Rule, Label, Btn } from "./ui.jsx";
 import { getTimes, EVENT_TURNS, EVENT_DISTANCE, EVENTS_NO_10_11 } from "../constants/competitionTimes.js";
 import { parseTime, formatTime, gap, getStatus, requiredSplit50, flipTurnSaving, ageGroupKey } from "../lib/timeUtils.js";
+import { ReportView } from "./ReportView.jsx";
 
 // --- Status config ------------------------------------------------------------
 const STATUS_CONFIG = {
-  qualifies:     { color: "#007A5E", bg: "#EBF7F4", label: "Qualifies ✓" },
+  qualifies:     { color: "#007A5E", bg: "#EBF7F4", label: "Qualifies " },
   consideration: { color: "#C4610A", bg: "#FFF5EB", label: "Consideration" },
   close:         { color: "#005EB8", bg: "#EEF4FF", label: "Close" },
   working:       { color: T.muted,   bg: T.offWhite, label: "Working towards" },
@@ -15,8 +16,8 @@ const STATUS_CONFIG = {
 
 // --- Flip turn benchmarks (seconds, wall to 5m breakout) ---------------------
 const TURN_BENCHMARKS = {
-  "Club developing (10–12)": 1.10,
-  "Club competitive (13–15)": 0.90,
+  "Club developing (10-12)": 1.10,
+  "Club competitive (13-15)": 0.90,
   "County standard (15+)":    0.75,
   "Regional / national":      0.60,
 };
@@ -44,8 +45,8 @@ function EventRow({ event, pb, qualTime, consTime, ageGroup, onSelect, selected 
           {pbSecs && (
             <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted, marginTop: 2 }}>
               PB {formatTime(pbSecs)}
-              {gapToC !== null && gapToC > 0 && ` · ${gapToC.toFixed(2)}s to consideration`}
-              {gapToC !== null && gapToC <= 0 && gapToQ !== null && gapToQ > 0 && ` · ${gapToQ.toFixed(2)}s to qualifying`}
+              {gapToC !== null && gapToC > 0 && ` . ${gapToC.toFixed(2)}s to consideration`}
+              {gapToC !== null && gapToC <= 0 && gapToQ !== null && gapToQ > 0 && ` . ${gapToQ.toFixed(2)}s to qualifying`}
             </div>
           )}
         </div>
@@ -92,9 +93,9 @@ function EventDetail({ event, pb, pbSecs, qualTime, qualSecs, consTime, consSecs
       <Label style={{ marginBottom: 10 }}>Time targets</Label>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 20 }}>
         {[
-          ["Your PB",       pb || "—",       T.dark],
-          ["Consideration", consTime || "—", "#C4610A"],
-          ["Qualifying",    qualTime || "—", "#007A5E"],
+          ["Your PB",       pb || "--",       T.dark],
+          ["Consideration", consTime || "--", "#C4610A"],
+          ["Qualifying",    qualTime || "--", "#007A5E"],
         ].map(([lbl, val, col]) => (
           <div key={lbl} style={{ background: T.white, padding: "10px 12px", border: `1px solid ${T.rule}` }}>
             <Label style={{ marginBottom: 4, fontSize: 9 }}>{lbl}</Label>
@@ -109,9 +110,9 @@ function EventDetail({ event, pb, pbSecs, qualTime, qualSecs, consTime, consSecs
           <Label style={{ marginBottom: 10 }}>Required avg 50m split</Label>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 20 }}>
             {[
-              ["Your current", splitPb ? formatTime(splitPb) : "—", T.dark],
-              ["For consideration", splitCons ? formatTime(splitCons) : "—", "#C4610A"],
-              ["For qualifying", splitQual ? formatTime(splitQual) : "—", "#007A5E"],
+              ["Your current", splitPb ? formatTime(splitPb) : "--", T.dark],
+              ["For consideration", splitCons ? formatTime(splitCons) : "--", "#C4610A"],
+              ["For qualifying", splitQual ? formatTime(splitQual) : "--", "#007A5E"],
             ].map(([lbl, val, col]) => (
               <div key={lbl} style={{ background: T.white, padding: "10px 12px", border: `1px solid ${T.rule}` }}>
                 <Label style={{ marginBottom: 4, fontSize: 9 }}>{lbl}</Label>
@@ -153,13 +154,13 @@ function EventDetail({ event, pb, pbSecs, qualTime, qualSecs, consTime, consSecs
                   <div>
                     <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, fontWeight: 500, color: T.dark }}>{label}</div>
                     <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 10, color: T.muted }}>
-                      {target}s/turn · save {saving.toFixed(2)}s total
-                      {improvedPb && ` → ${formatTime(improvedPb)}`}
+                      {target}s/turn . save {saving.toFixed(2)}s total
+                      {improvedPb && `  ${formatTime(improvedPb)}`}
                     </div>
                   </div>
                   {(wouldQualify || wouldCons) && (
                     <span style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase", color: wouldQualify ? "#007A5E" : "#C4610A", background: wouldQualify ? "#EBF7F4" : "#FFF5EB", padding: "3px 8px" }}>
-                      {wouldQualify ? "Would qualify ✓" : "Would hit consideration"}
+                      {wouldQualify ? "Would qualify " : "Would hit consideration"}
                     </span>
                   )}
                 </div>
@@ -173,9 +174,10 @@ function EventDetail({ event, pb, pbSecs, qualTime, qualSecs, consTime, consSecs
 }
 
 // --- Main TargetsView ---------------------------------------------------------
-export function TargetsView({ profile, pbs, onSetupProfile }) {
+export function TargetsView({ profile, pbs, onSetupProfile, sessions }) {
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [filterGroup, setFilterGroup]     = useState("All");
+  const [subTab, setSubTab]               = useState("targets"); // targets | report
 
   if (!profile) {
     return (
@@ -185,7 +187,7 @@ export function TargetsView({ profile, pbs, onSetupProfile }) {
         <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.6, marginBottom: 24 }}>
           Add your son's age, gender and personal bests to see how he compares against Surrey County 2027 standards.
         </p>
-        <Btn onClick={onSetupProfile}>Set Up Profile →</Btn>
+        <Btn onClick={onSetupProfile}>Set Up Profile</Btn>
       </div>
     );
   }
@@ -219,19 +221,46 @@ export function TargetsView({ profile, pbs, onSetupProfile }) {
   return (
     <div>
       {/* Header */}
-      <div style={{ padding: "32px 24px 20px" }}>
+      <div style={{ padding: "32px 24px 0" }}>
         <Label style={{ color: T.red, marginBottom: 6 }}>Surrey County 2027</Label>
         <div style={{ fontSize: 22, fontWeight: 300, letterSpacing: "-0.02em", color: T.black, marginBottom: 4 }}>
           {profile.name}'s Targets
         </div>
-        <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted, marginBottom: 20 }}>
-          Age {profile.age} · {profile.gender === "MALE" ? "Male/Open" : "Female"} · {profile.poolType === "LONG" ? "Long course" : "Short course"} · Age group {ag}
+        <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted, marginBottom: 16 }}>
+          Age {profile.age} . {profile.gender === "MALE" ? "Male/Open" : "Female"} . {profile.poolType === "LONG" ? "Long course" : "Short course"} . Age group {ag}
         </div>
-        <Rule />
+
+        {/* Sub-tab bar */}
+        <div style={{ display: "flex", borderBottom: `1px solid ${T.rule}` }}>
+          {[["targets", "Targets"], ["report", "Pre-Meet Report"]].map(([id, label]) => (
+            <button key={id} onClick={() => setSubTab(id)} style={{
+              padding: "10px 16px", border: "none", background: "none", cursor: "pointer",
+              fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif",
+              fontSize: 11, fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase",
+              color: subTab === id ? T.dark : T.muted,
+              borderBottom: `2px solid ${subTab === id ? T.dark : "transparent"}`,
+              marginBottom: -1,
+            }}>{label}</button>
+          ))}
+          <button onClick={onSetupProfile} style={{
+            marginLeft: "auto", background: "none", border: "none",
+            color: T.muted, padding: "10px 0", fontSize: 11, cursor: "pointer",
+            fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", letterSpacing: "0.06em",
+          }}>
+            Edit profile
+          </button>
+        </div>
       </div>
 
+      {/* Report sub-tab */}
+      {subTab === "report" && <ReportView sessions={sessions || []} />}
+
+      {/* Targets sub-tab */}
+      {subTab === "targets" && (
+        <div>
+
       {/* Summary pills */}
-      <div style={{ display: "flex", gap: 8, padding: "0 24px 20px", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 8, padding: "16px 24px 20px", flexWrap: "wrap" }}>
         {[
           ["qualifies", "#007A5E", "#EBF7F4"],
           ["consideration", "#C4610A", "#FFF5EB"],
@@ -245,9 +274,6 @@ export function TargetsView({ profile, pbs, onSetupProfile }) {
             </span>
           </div>
         ))}
-        <button onClick={onSetupProfile} style={{ marginLeft: "auto", background: "none", border: `1px solid ${T.rule}`, color: T.mid, padding: "5px 12px", fontSize: 11, cursor: "pointer", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif" }}>
-          Edit profile
-        </button>
       </div>
 
       {/* Filter tabs */}
@@ -291,6 +317,7 @@ export function TargetsView({ profile, pbs, onSetupProfile }) {
           Tap any event to see required splits, flip turn analysis, and gap to each standard. Times from Surrey County Age Group Championships 2027.
         </div>
       </div>
+      </div>  {/* end targets sub-tab */}
     </div>
   );
 }
