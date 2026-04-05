@@ -1,17 +1,23 @@
 {
-  "name": "swim-analyzer-client",
+  "name": "swim-analyzer",
   "version": "1.0.0",
-  "private": true,
+  "description": "AI-powered swim technique analyzer",
+  "main": "server.js",
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "start": "node server.js",
+    "build": "cd client && npm install && npm run build",
+    "dev": "concurrently \"node server.js\" \"cd client && npm run dev\""
   },
   "dependencies": {
-    "@vitejs/plugin-react": "^4.2.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "vite": "^7.0.0"
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.1"
   }
 }
