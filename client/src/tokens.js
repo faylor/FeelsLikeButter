@@ -1,4 +1,4 @@
-// ─── MoMA Design Tokens ───────────────────────────────────────────────────────
+// --- MoMA Design Tokens -------------------------------------------------------
 export const T = {
   white:    "#FFFFFF",
   offWhite: "#F7F7F5",
