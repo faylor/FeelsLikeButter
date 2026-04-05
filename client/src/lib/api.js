@@ -116,3 +116,83 @@ Return ONLY valid JSON, no surrounding text:
   if (!match) throw new Error("No JSON in response");
   return JSON.parse(match[0]);
 }
+
+// --- Smart lap-aware timing analysis -----------------------------------------
+// frames: [{data, time, zone}] with zone labels from lapAwareTimestamps
+export async function analyzeSmartTiming(frames, event, poolLength, recentPbSecs, stroke) {
+  const dist  = parseInt(event) || 100;
+  const laps  = dist / poolLength;
+  const lapPb = recentPbSecs ? (recentPbSecs / laps).toFixed(2) : "unknown";
+
+  // Group frames by zone for Claude context
+  const startFrames  = frames.filter(f => f.zone === "start");
+  const wallFrames   = frames.filter(f => f.zone === "wall-zone");
+  const finishFrames = frames.filter(f => f.zone === "finish");
+
+  const frameList = frames.map((f, i) =>
+    `Frame ${i + 1} [${f.zone}] at ${f.time}s`
+  ).join(", ");
+
+  const prompt = `You are an expert swimming timing analyst. Analyze these ${frames.length} frames from a ${event} race in a ${poolLength}m pool.
+
+Recent PB for this event: ${recentPbSecs ? recentPbSecs + "s" : "unknown"}
+Expected lap time: ~${lapPb}s per ${poolLength}m lap
+Number of laps: ${laps}
+Stroke: ${stroke}
+
+Frames are clustered at predicted wall-touch zones (${wallFrames.length} wall frames), plus start (${startFrames.length} frames) and finish (${finishFrames.length} frames).
+Frame timestamps: ${frameList}
+
+For each wall zone cluster, identify the exact wall-touch moment by looking for:
+- Hand/feet contact with wall
+- Body direction change (approaching vs leaving wall)
+- Streamline position after push-off
+- Splash patterns at wall
+
+Return ONLY valid JSON:
+{
+  "lapTimes": [
+    { "lap": 1, "predictedEnd": <seconds>, "detectedTouch": <seconds or null>, "confidence": "high|medium|low", "note": "<what you saw>" }
+  ],
+  "turnTimes": [
+    { "turn": 1, "touchTime": <seconds>, "leaveTime": <seconds>, "duration": <seconds>, "confidence": "high|medium|low" }
+  ],
+  "splits": [
+    { "label": "Lap 1", "time": <seconds or null>, "pace": "<faster/slower/even vs predicted>" }
+  ],
+  "finishTime": <seconds or null>,
+  "strokeCount": <total visible strokes or null>,
+  "pacingPattern": "<even|positive split|negative split|variable>",
+  "pacingNote": "<1 sentence on observed pacing>",
+  "bestTurn": <turn number or null>,
+  "worstTurn": <turn number or null>,
+  "confidence": "high|medium|low",
+  "dataQuality": "<any issues with frame coverage>"
+}`;
+
+  // Build content: labeled image + timestamp for each frame
+  const content = [];
+  frames.forEach((f, i) => {
+    content.push({ type: "text", text: `Frame ${i + 1} [${f.zone}] at ${f.time}s:` });
+    content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: f.data } });
+  });
+  content.push({ type: "text", text: prompt });
+
+  const res = await fetch("/api/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1500,
+      messages: [{ role: "user", content }],
+    }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `API error ${res.status}`);
+  const text = data.content?.map(b => b.text || "").join("") || "";
+  console.log("[smart-timing] raw:", text.slice(0, 200));
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("No JSON in response");
+  return JSON.parse(match[0]);
+}
