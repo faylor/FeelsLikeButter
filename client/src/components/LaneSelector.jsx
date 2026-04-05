@@ -16,12 +16,20 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
   const [ready, setReady]     = useState(false);
 
   // -- Load middle frame as preview -------------------------------------------
+  const [duration, setDuration]   = useState(0);
+  const [seekTime, setSeekTime]   = useState(1.5);
+
   useEffect(() => {
     if (!videoFile) return;
     const video = document.createElement("video");
     video.src = URL.createObjectURL(videoFile);
     video.onloadedmetadata = () => {
-      video.currentTime = video.duration * 0.5;
+      const dur = video.duration;
+      setDuration(dur);
+      // Default to 1.5s -- usually shows swimmer on blocks or just entering water
+      const t = Math.min(1.5, dur * 0.05);
+      setSeekTime(t);
+      video.currentTime = t;
       video.onseeked = () => {
         const c = document.createElement("canvas");
         c.width = CW; c.height = CH;
@@ -33,6 +41,25 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
     };
     video.load();
   }, [videoFile]);
+
+  // Scrub to a different timestamp
+  const handleScrub = (t) => {
+    setSeekTime(t);
+    setCrop(null);
+    const video = document.createElement("video");
+    video.src = URL.createObjectURL(videoFile);
+    video.onloadedmetadata = () => {
+      video.currentTime = t;
+      video.onseeked = () => {
+        const c = document.createElement("canvas");
+        c.width = CW; c.height = CH;
+        c.getContext("2d").drawImage(video, 0, 0, CW, CH);
+        setThumb(c.toDataURL("image/jpeg", 0.85));
+        URL.revokeObjectURL(video.src);
+      };
+    };
+    video.load();
+  };
 
   // -- Redraw canvas overlay --------------------------------------------------
   useEffect(() => {
@@ -185,6 +212,29 @@ export function LaneSelector({ videoFile, onConfirm, onBack, accent }) {
             </button>
           )}
         </div>
+
+        {/* Scrubber */}
+        {duration > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+              <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted }}>
+                Frame at {seekTime.toFixed(1)}s
+              </span>
+              <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted }}>
+                {duration.toFixed(1)}s
+              </span>
+            </div>
+            <input
+              type="range" min={0} max={duration} step={0.1}
+              value={seekTime}
+              onChange={e => handleScrub(parseFloat(e.target.value))}
+              style={{ width: "100%", accentColor: T.dark }}
+            />
+            <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted, marginTop: 4 }}>
+              Drag to find a clear view of the swimmer -- on blocks or standing still is ideal
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Tips */}
