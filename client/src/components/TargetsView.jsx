@@ -1,12 +1,10 @@
-export default TargetsView;
-
 import { useState } from "react";
 import { T } from "../tokens.js";
 import { Rule, Label, Btn } from "./ui.jsx";
 import { getTimes, EVENT_TURNS, EVENT_DISTANCE, EVENTS_NO_10_11 } from "../constants/competitionTimes.js";
 import { parseTime, formatTime, gap, getStatus, requiredSplit50, flipTurnSaving, ageGroupKey } from "../lib/timeUtils.js";
 
-// ─── Status config ────────────────────────────────────────────────────────────
+// --- Status config ------------------------------------------------------------
 const STATUS_CONFIG = {
   qualifies:     { color: "#007A5E", bg: "#EBF7F4", label: "Qualifies ✓" },
   consideration: { color: "#C4610A", bg: "#FFF5EB", label: "Consideration" },
@@ -15,7 +13,7 @@ const STATUS_CONFIG = {
   none:          { color: T.muted,   bg: T.offWhite, label: "No PB entered" },
 };
 
-// ─── Flip turn benchmarks (seconds, wall to 5m breakout) ─────────────────────
+// --- Flip turn benchmarks (seconds, wall to 5m breakout) ---------------------
 const TURN_BENCHMARKS = {
   "Club developing (10–12)": 1.10,
   "Club competitive (13–15)": 0.90,
@@ -23,7 +21,7 @@ const TURN_BENCHMARKS = {
   "Regional / national":      0.60,
 };
 
-// ─── Single event row ─────────────────────────────────────────────────────────
+// --- Single event row ---------------------------------------------------------
 function EventRow({ event, pb, qualTime, consTime, ageGroup, onSelect, selected }) {
   const pbSecs   = parseTime(pb);
   const qualSecs = parseTime(qualTime);
@@ -70,7 +68,7 @@ function EventRow({ event, pb, qualTime, consTime, ageGroup, onSelect, selected 
   );
 }
 
-// ─── Expanded detail panel ────────────────────────────────────────────────────
+// --- Expanded detail panel ----------------------------------------------------
 function EventDetail({ event, pb, pbSecs, qualTime, qualSecs, consTime, consSecs, status }) {
   const turns   = EVENT_TURNS[event] || 0;
   const dist    = EVENT_DISTANCE[event] || 0;
@@ -174,7 +172,7 @@ function EventDetail({ event, pb, pbSecs, qualTime, qualSecs, consTime, consSecs
   );
 }
 
-// ─── Main TargetsView ─────────────────────────────────────────────────────────
+// --- Main TargetsView ---------------------------------------------------------
 export function TargetsView({ profile, pbs, onSetupProfile }) {
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [filterGroup, setFilterGroup]     = useState("All");
@@ -296,4 +294,3 @@ export function TargetsView({ profile, pbs, onSetupProfile }) {
     </div>
   );
 }
-
