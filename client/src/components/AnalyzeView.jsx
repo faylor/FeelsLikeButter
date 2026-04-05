@@ -4,16 +4,35 @@ import { Rule, Label, ScoreRing, StatusMark, ThinBar, StrokeChip, Btn } from "./
 import { PrivacyEditor } from "./PrivacyEditor.jsx";
 import { LaneSelector } from "./LaneSelector.jsx";
 import { TechniqueExample } from "./TechniqueExample.jsx";
+import { TimingAnalysis } from "./TimingAnalysis.jsx";
 
 // --- Analyzing spinner --------------------------------------------------------
-function AnalyzingScreen() {
+function AnalyzingScreen({ extractProgress }) {
+  const isExtracting = extractProgress !== null;
+  const pct = extractProgress ? Math.round((extractProgress.done / extractProgress.total) * 100) : 0;
+
   return (
     <div style={{ padding: "80px 24px", textAlign: "center" }}>
       <div style={{ width: 32, height: 1, background: T.dark, margin: "0 auto 32px" }} />
-      <Label style={{ display: "block", marginBottom: 8, color: T.black }}>Analyzing</Label>
-      <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.8, margin: 0 }}>
-        Extracting frames · Applying face blur<br />Sending to AI coach
-      </p>
+      <Label style={{ display: "block", marginBottom: 8, color: T.black }}>
+        {isExtracting ? "Extracting frames" : "Analysing"}
+      </Label>
+
+      {isExtracting ? (
+        <div style={{ margin: "16px auto 0", maxWidth: 240 }}>
+          <div style={{ height: 2, background: T.rule, borderRadius: 1, overflow: "hidden", marginBottom: 10 }}>
+            <div style={{ width: `${pct}%`, height: "100%", background: T.dark, transition: "width 0.2s ease", borderRadius: 1 }} />
+          </div>
+          <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, margin: 0 }}>
+            {extractProgress.done} / {extractProgress.total} frames
+          </p>
+        </div>
+      ) : (
+        <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.8, margin: 0 }}>
+          Sending 60 frames to AI coach<br />This takes 20--40 seconds
+        </p>
+      )}
+
       <div style={{ marginTop: 20, display: "inline-flex", alignItems: "center", gap: 6 }}>
         <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#007A5E" }} />
         <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: "#007A5E", letterSpacing: "0.06em" }}>
@@ -83,10 +102,10 @@ function ResultPanel({ result, stroke, note, onNoteChange, onSave }) {
           </div>
           {item.status !== "good" && item.drill && (
             <div style={{ marginTop: 8, fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: sc.accent }}>
-              Drill — {item.drill}
+              Drill -- {item.drill}
             </div>
           )}
-          {/* Show example button — only on flagged items */}
+          {/* Show example button -- only on flagged items */}
           {item.status !== "good" && (
             <button
               onClick={() => setExampleItem(item)}
@@ -97,7 +116,7 @@ function ResultPanel({ result, stroke, note, onNoteChange, onSave }) {
                 fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif",
                 letterSpacing: "0.06em",
               }}>
-              See good vs bad example →
+              See good vs bad example 
             </button>
           )}
         </div>
@@ -136,7 +155,7 @@ function UploadStep({ stroke, videoFile, error, onStrokeChange, onFileChange, on
           : <>
               <div style={{ fontSize: 24, color: T.muted, marginBottom: 10 }}>+</div>
               <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, fontWeight: 500, color: T.dark, marginBottom: 4 }}>Select video</div>
-              <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted }}>MP4 or MOV · Poolside angle</div>
+              <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted }}>MP4 or MOV . Poolside angle</div>
             </>}
       </div>
 
@@ -167,7 +186,7 @@ function UploadStep({ stroke, videoFile, error, onStrokeChange, onFileChange, on
 
       {videoFile && (
         <Btn onClick={onContinue} accent={sc.accent}>
-          Select Swimmer →
+          Select Swimmer 
         </Btn>
       )}
     </div>
@@ -175,7 +194,7 @@ function UploadStep({ stroke, videoFile, error, onStrokeChange, onFileChange, on
 }
 
 // --- AnalyzeView --------------------------------------------------------------
-export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, setStep, result, error, note, setNote, onLaneConfirm, onPrivacyConfirm, onSave }) {
+export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, setStep, result, error, note, setNote, extractProgress, frameCount, setFrameCount, onLaneConfirm, onPrivacyConfirm, onSave, profile, pbs }) {
   const sc = T.strokes[stroke];
 
   if (step === "select") {
@@ -184,7 +203,19 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
   if (step === "privacy") {
     return <PrivacyEditor videoFile={videoFile} onConfirm={onPrivacyConfirm} onBack={() => setStep("select")} accent={sc.accent} />;
   }
-  if (step === "analyzing") return <AnalyzingScreen />;
+  if (step === "analyzing") return <AnalyzingScreen extractProgress={extractProgress} />;
+  if (step === "timing") {
+    return <TimingAnalysis stroke={stroke} profile={profile} pbs={pbs} onBack={() => setStep("upload")} />;
+  }
+
+  const MODES = [
+    { key: "timing", label: "Timing", sub: "Splits & turns, no video" },
+    { key: "quick",    label: "Quick",    sub: "8 frames" },
+    { key: "standard", label: "Standard", sub: "30 frames" },
+    { key: "deep",     label: "Deep",     sub: "60 frames" },
+  ];
+
+  const modeKey = frameCount === 8 ? "quick" : frameCount === 30 ? "standard" : "deep";
 
   return (
     <div>
@@ -202,6 +233,34 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
         {Object.keys(T.strokes).map((s) => (
           <StrokeChip key={s} stroke={s} active={stroke === s} onClick={() => setStroke(s)} />
         ))}
+      </div>
+
+      {/* Mode selector */}
+      <div style={{ padding: "0 24px 20px" }}>
+        <Label style={{ marginBottom: 10 }}>Analysis mode</Label>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6 }}>
+          {MODES.map(m => {
+            const active = m.key === "timing" ? step === "timing" : modeKey === m.key;
+            return (
+              <button key={m.key}
+                onClick={() => {
+                  if (m.key === "timing") { setStep("timing"); return; }
+                  const counts = { quick: 8, standard: 30, deep: 60 };
+                  setFrameCount(counts[m.key]);
+                }}
+                style={{
+                  padding: "10px 6px", border: `1px solid ${active ? T.dark : T.rule}`,
+                  background: active ? T.dark : "none",
+                  color: active ? "#fff" : T.mid,
+                  cursor: "pointer", textAlign: "center",
+                  fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif",
+                }}>
+                <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 2 }}>{m.label}</div>
+                <div style={{ fontSize: 9, letterSpacing: "0.04em", opacity: 0.75 }}>{m.sub}</div>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <UploadStep
