@@ -41,7 +41,7 @@ app.get("/api/swim-results", async (req, res) => {
       return res.status(400).json({ error: "Invalid tiref -- must be a number." });
     }
 
-    const url = `https://www.swimmingresults.org/individualbest/?tiref=${tiref}&mode=A`;
+    const url = `https://www.swimmingresults.org/individualbest/personal_best.php?tiref=${tiref}&mode=A`;
     console.log(`[swim-results] fetching ${url}`);
 
     let response;
