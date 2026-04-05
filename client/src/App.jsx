@@ -9,9 +9,9 @@ import { Auth }          from "./components/Auth.jsx";
 import { HomeView }      from "./components/HomeView.jsx";
 import { AnalyzeView }   from "./components/AnalyzeView.jsx";
 import { HistoryView }   from "./components/HistoryView.jsx";
-import { ReportView }    from "./components/ReportView.jsx";
 import { TargetsView }   from "./components/TargetsView.jsx";
 import { ProfileSetup }  from "./components/ProfileSetup.jsx";
+import { TimingAnalysis } from "./components/TimingAnalysis.jsx";
 import { Nav }           from "./components/Nav.jsx";
 
 export default function App() {
@@ -129,6 +129,7 @@ export default function App() {
   const handleNavigate = (id) => {
     setView(id);
     if (id === "analyze" && step === "result") setStep("upload");
+    if (id === "analyze" && step === "timing") setStep("upload");
   };
 
   const handleStrokeSelect = (s) => { setStroke(s); setView("analyze"); };
@@ -192,10 +193,16 @@ export default function App() {
       {view === "targets" && (
         <TargetsView
           profile={profile} pbs={pbs}
+          sessions={sessions}
           onSetupProfile={() => setShowProfile(true)}
         />
       )}
-      {view === "report" && <ReportView sessions={sessions} />}
+      {view === "timing" && (
+        <TimingAnalysis
+          stroke={stroke} profile={profile} pbs={pbs}
+          onBack={() => setView("home")}
+        />
+      )}
 
       <Nav view={view} accentColor={accentColor} onNavigate={handleNavigate} />
     </div>
