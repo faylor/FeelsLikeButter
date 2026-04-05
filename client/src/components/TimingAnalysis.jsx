@@ -58,7 +58,8 @@ function getVideoDuration(file) {
 }
 
 // --- Component ---------------------------------------------------------------
-export function TimingAnalysis({ stroke, profile, pbs, onBack }) {
+export function TimingAnalysis({ stroke: initialStroke, profile, pbs, onBack }) {
+  const [stroke, setStroke] = useState(initialStroke || "Freestyle");
   const events   = STROKE_EVENTS[stroke] || STROKE_EVENTS.Freestyle;
   const poolType = profile?.poolType || "LONG";
   const poolLen  = poolType === "SHORT" ? 25 : 50;
@@ -185,7 +186,19 @@ export function TimingAnalysis({ stroke, profile, pbs, onBack }) {
 
       <div style={{ padding: "0 24px" }}>
 
-        {/* Shared event selector */}
+        {/* Stroke selector */}
+        <div style={{ display: "flex", borderBottom: `1px solid ${T.rule}`, marginBottom: 20 }}>
+          {Object.keys(STROKE_EVENTS).map(s => (
+            <button key={s} onClick={() => { setStroke(s); handleEventChange(STROKE_EVENTS[s][0]); }} style={{
+              flex: 1, padding: "10px 4px", border: "none", background: "none", cursor: "pointer",
+              fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif",
+              fontSize: 9, fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase",
+              color: stroke === s ? T.dark : T.muted,
+              borderBottom: `2px solid ${stroke === s ? T.dark : "transparent"}`,
+              marginBottom: -1,
+            }}>{s}</button>
+          ))}
+        </div>
         <div style={{ marginBottom: 20 }}>
           <Label style={{ marginBottom: 10 }}>Event</Label>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
