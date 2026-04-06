@@ -62,115 +62,86 @@ function seekTo(video, t) {
   });
 }
 
-// --- Lane rope tracking -- HSV batch pixel approach -------------------------
-// Reads pixel strips with ONE getImageData call per column -- fast.
-// Rope categories: RED, YELLOW, BLUE (dark).
-// Pool water = aqua/cyan (H 170-200, low-mid S) -- clearly different from all rope types.
+// --- Lane rope tracking -- template matching --------------------------------
+// Extracts small patches from the rope on frame 0.
+// Each subsequent frame: find where those patches appear using SAD matching.
+// No colour knowledge needed -- works regardless of rope colour.
 
-function rgbToHsv(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
-  let h = 0;
-  if (d > 0) {
-    if      (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-    else if (max === g) h = ((b - r) / d + 2) / 6;
-    else                h = ((r - g) / d + 4) / 6;
-  }
-  return { h: h * 360, s: max === 0 ? 0 : d / max, v: max };
-}
+const PATCH_W = 48, PATCH_H = 18, N_PATCHES = 6, SEARCH_PX = 28;
 
-function isRopePixel(r, g, b, category) {
-  const { h, s, v } = rgbToHsv(r, g, b);
-  switch (category) {
-    case "red":
-      // Bright saturated red -- nothing like pool water
-      return s > 0.45 && v > 0.25 && (h < 22 || h > 338);
-    case "yellow":
-      // Bright yellow/orange -- pool water never looks yellow
-      return s > 0.50 && v > 0.35 && h > 38 && h < 68;
-    case "blue":
-      // Dark/mid blue -- key: water is H 170-200 low-S, rope is H 210-255 high-S dark
-      return s > 0.45 && v < 0.58 && h > 210 && h < 255;
-    default:
-      return false;
-  }
-}
-
-// Read a rectangle of pixels in ONE getImageData call
-function readPixels(ctx, x, y, w, h) {
-  const cx = Math.max(0, x), cy = Math.max(0, y);
-  const cw = Math.min(w, ctx.canvas.width  - cx);
-  const ch = Math.min(h, ctx.canvas.height - cy);
-  if (cw <= 0 || ch <= 0) return null;
-  return { data: ctx.getImageData(cx, cy, cw, ch).data, w: cw, h: ch, x: cx, y: cy };
-}
-
-// Identify rope color from drawn region -- batch read
-function identifyRopeCategory(ctx, rope, W, H) {
-  const votes = { red: 0, yellow: 0, blue: 0 };
-  const pad   = 8; // scan 8px either side of the drawn line
-  const x0    = Math.round(Math.min(rope.x1, rope.x2) * W);
-  const x1    = Math.round(Math.max(rope.x1, rope.x2) * W);
-  const y0    = Math.round(Math.min(rope.y1, rope.y2) * H) - pad;
-  const stripW = Math.max(1, x1 - x0 + 1);
-  const stripH = Math.round(Math.abs(rope.y2 - rope.y1) * H) + pad * 2 + 1;
-
-  const px = readPixels(ctx, x0, y0, stripW, stripH);
-  if (!px) return null;
-
-  for (let i = 0; i < px.data.length; i += 4) {
-    const r = px.data[i], g = px.data[i+1], b = px.data[i+2];
-    for (const cat of ["red", "yellow", "blue"]) {
-      if (isRopePixel(r, g, b, cat)) votes[cat]++;
+// Extract a greyscale patch (faster matching) centered at cx,cy from full-frame data
+function extractPatch(data, W, H, cx, cy) {
+  const patch = new Float32Array(PATCH_W * PATCH_H);
+  const ox = cx - Math.floor(PATCH_W / 2);
+  const oy = cy - Math.floor(PATCH_H / 2);
+  for (let row = 0; row < PATCH_H; row++) {
+    for (let col = 0; col < PATCH_W; col++) {
+      const sx = ox + col, sy = oy + row;
+      if (sx < 0 || sx >= W || sy < 0 || sy >= H) { patch[row * PATCH_W + col] = 128; continue; }
+      const i = (sy * W + sx) * 4;
+      // Luminance
+      patch[row * PATCH_W + col] = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
     }
   }
-
-  const best = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
-  const total = (px.data.length / 4) || 1;
-  console.log(`[rope] votes:`, votes, `best=${best[0]} (${((best[1]/total)*100).toFixed(1)}%)`);
-  return best[1] > 4 ? best[0] : null;
+  return patch;
 }
 
-// Track rope per frame using batch column reads
-function trackRopeByColor(ctx, category, prevRope, W, H) {
-  if (!category) return prevRope;
+// Find best vertical match for a patch at column cx, searching expY +- SEARCH_PX
+// Returns matched Y in pixels, or null
+function matchPatch(data, W, H, patch, cx, expY) {
+  let bestY = null, bestSAD = Infinity;
+  const ox = cx - Math.floor(PATCH_W / 2);
 
-  const searchPx = Math.round(H * 0.13);
-  const xSteps   = 28;
-  const colW     = 3; // 3-pixel wide columns for noise robustness
+  for (let dy = -SEARCH_PX; dy <= SEARCH_PX; dy++) {
+    const ty = expY + dy;
+    const oy = ty - Math.floor(PATCH_H / 2);
+    let sad = 0;
+    for (let row = 0; row < PATCH_H; row++) {
+      for (let col = 0; col < PATCH_W; col++) {
+        const sx = ox + col, sy = oy + row;
+        let pixel = 128;
+        if (sx >= 0 && sx < W && sy >= 0 && sy < H) {
+          const i = (sy * W + sx) * 4;
+          pixel = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
+        }
+        sad += Math.abs(pixel - patch[row * PATCH_W + col]);
+      }
+    }
+    if (sad < bestSAD) { bestSAD = sad; bestY = ty; }
+  }
+
+  // Reject if best match is too poor (all pixels wrong -- patch not found)
+  const threshold = PATCH_W * PATCH_H * 40; // avg 40/255 per pixel
+  return bestSAD < threshold ? bestY : null;
+}
+
+// Seed rope patches from first captured frame
+function seedRopePatches(data, W, H, rope) {
+  const patches = [];
+  for (let i = 0; i < N_PATCHES; i++) {
+    const tx = (i + 0.5) / N_PATCHES;
+    const cx = Math.round(tx * W);
+    const cy = Math.round((rope.y1 + (rope.y2 - rope.y1) * tx) * H);
+    patches.push({ tx, cx, cy, patch: extractPatch(data, W, H, cx, cy) });
+  }
+  console.log(`[rope] seeded ${patches.length} patches`);
+  return patches;
+}
+
+// Track rope using template matching
+function trackRopeByTemplate(data, W, H, patches, prevRope) {
   const detected = [];
 
-  for (let xi = 0; xi < xSteps; xi++) {
-    const tx   = (xi + 0.5) / xSteps;
-    const px   = Math.round(tx * W) - 1;
-    const expY = (prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx) * H;
-    const y0   = Math.round(expY - searchPx);
-
-    const strip = readPixels(ctx, px, y0, colW, searchPx * 2 + 1);
-    if (!strip) continue;
-
-    const hits = [];
-    for (let row = 0; row < strip.h; row++) {
-      let rSum = 0, gSum = 0, bSum = 0;
-      for (let col = 0; col < strip.w; col++) {
-        const i = (row * strip.w + col) * 4;
-        rSum += strip.data[i]; gSum += strip.data[i+1]; bSum += strip.data[i+2];
-      }
-      const avg = strip.w || 1;
-      if (isRopePixel(rSum/avg, gSum/avg, bSum/avg, category)) {
-        hits.push(strip.y + row);
-      }
-    }
-
-    if (hits.length >= 2) {
-      hits.sort((a, b) => a - b);
-      detected.push({ x: tx, y: hits[Math.floor(hits.length / 2)] / H });
-    }
+  for (const p of patches) {
+    const expY = Math.round((prevRope.y1 + (prevRope.y2 - prevRope.y1) * p.tx) * H);
+    const matchY = matchPatch(data, W, H, p.patch, p.cx, expY);
+    if (matchY !== null) detected.push({ x: p.tx, y: matchY / H });
   }
 
-  console.log(`[rope:${category}] ${detected.length}/${xSteps} cols matched`);
-  if (detected.length < 7) return prevRope;
+  console.log(`[rope] ${detected.length}/${N_PATCHES} patches matched`);
+  if (detected.length < 3) return prevRope; // not enough -- hold position
 
+  // Least-squares line fit through matched positions
   const n   = detected.length;
   const sx  = detected.reduce((s, p) => s + p.x, 0);
   const sy  = detected.reduce((s, p) => s + p.y, 0);
@@ -182,9 +153,10 @@ function trackRopeByColor(ctx, category, prevRope, W, H) {
   const slope = (n * sxy - sx * sy) / den;
   const icept = (sy - slope * sx) / n;
 
+  // Slow EMA -- gradual rotation, not per-frame jitter
   return {
-    x1: 0, y1: ema(prevRope.y1, Math.max(0.01, Math.min(0.99, icept)),        0.18),
-    x2: 1, y2: ema(prevRope.y2, Math.max(0.01, Math.min(0.99, icept+slope)), 0.18),
+    x1: 0, y1: ema(prevRope.y1, Math.max(0.01, Math.min(0.99, icept)),        0.2),
+    x2: 1, y2: ema(prevRope.y2, Math.max(0.01, Math.min(0.99, icept+slope)), 0.2),
   };
 }
 
@@ -196,7 +168,6 @@ function preventRopeCrossing(upper, lower, minGap = 0.03) {
   if (u.y2 > l.y2 - minGap) { const m = (u.y2+l.y2)/2; u.y2 = m-minGap/2; l.y2 = m+minGap/2; }
   return { upper: u, lower: l };
 }
-
 
 // Uses 640x360 capture -- high enough for analysis, safe on mobile memory
 export async function extractTrackedFrames(
@@ -266,10 +237,13 @@ export async function extractTrackedFrames(
   let lastGoodCrop = null;
   let lostCount = 0;
 
-  // Lane rope tracking state -- starts from drawn position, tracked per frame
-  let activeRopes    = laneRopes ? { upper: laneRopes.upper ? { ...laneRopes.upper } : null, lower: laneRopes.lower ? { ...laneRopes.lower } : null } : null;
-  let ropeCategories = { upper: null, lower: null }; // "red" | "yellow" | "blue" | null
-  let ropesSeeded    = false;
+  // Lane rope tracking state
+  let activeRopes  = laneRopes ? {
+    upper: laneRopes.upper ? { ...laneRopes.upper } : null,
+    lower: laneRopes.lower ? { ...laneRopes.lower } : null,
+  } : null;
+  let ropePatches  = { upper: null, lower: null }; // template patches seeded on frame 0
+  let ropesSeeded  = false;
 
   // IoU helper -- prevents tracker jumping to wrong person
   function iou(a, b) {
@@ -309,26 +283,22 @@ export async function extractTrackedFrames(
           (z.w / z.cw) * OUT_W, (z.h / z.ch) * OUT_H, 14)
       );
 
-      // 3. Dynamic lane rope tracking
+      // 3. Dynamic lane rope tracking via template matching
       if (activeRopes) {
-        const capCtxRO = cap.getContext("2d");
+        // One full-frame pixel read -- used for all rope operations this frame
+        const frameData = capCtx.getImageData(0, 0, OUT_W, OUT_H).data;
+
         if (!ropesSeeded) {
-          // Classify rope color category from drawn position on first frame
-          if (activeRopes.upper) {
-            ropeCategories.upper = identifyRopeCategory(capCtxRO, activeRopes.upper, OUT_W, OUT_H);
-            console.log(`[rope] upper: ${ropeCategories.upper}`);
-          }
-          if (activeRopes.lower) {
-            ropeCategories.lower = identifyRopeCategory(capCtxRO, activeRopes.lower, OUT_W, OUT_H);
-            console.log(`[rope] lower: ${ropeCategories.lower}`);
-          }
+          // Extract patches from rope positions on first frame
+          if (activeRopes.upper) ropePatches.upper = seedRopePatches(frameData, OUT_W, OUT_H, activeRopes.upper);
+          if (activeRopes.lower) ropePatches.lower = seedRopePatches(frameData, OUT_W, OUT_H, activeRopes.lower);
           ropesSeeded = true;
         } else {
-          // Track using HSV category matching
-          if (activeRopes.upper && ropeCategories.upper)
-            activeRopes.upper = trackRopeByColor(capCtxRO, ropeCategories.upper, activeRopes.upper, OUT_W, OUT_H);
-          if (activeRopes.lower && ropeCategories.lower)
-            activeRopes.lower = trackRopeByColor(capCtxRO, ropeCategories.lower, activeRopes.lower, OUT_W, OUT_H);
+          // Match patches to find new rope positions
+          if (activeRopes.upper && ropePatches.upper)
+            activeRopes.upper = trackRopeByTemplate(frameData, OUT_W, OUT_H, ropePatches.upper, activeRopes.upper);
+          if (activeRopes.lower && ropePatches.lower)
+            activeRopes.lower = trackRopeByTemplate(frameData, OUT_W, OUT_H, ropePatches.lower, activeRopes.lower);
           const safe = preventRopeCrossing(activeRopes.upper, activeRopes.lower);
           activeRopes.upper = safe.upper;
           activeRopes.lower = safe.lower;
