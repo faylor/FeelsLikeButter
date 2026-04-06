@@ -8,14 +8,24 @@ const SEND_MODES = [
   { key: "deep",     label: "Deep",     count: 40, sub: "Most thorough" },
 ];
 
-export function FrameReview({ frames, stroke, onConfirm, onBack }) {
-  const [reviewed, setReviewed]   = useState(() => frames.map(f => ({ ...f })));
+export function FrameReview({ frames, stroke, onConfirm, onBack, processing }) {
+  const [reviewed, setReviewed]   = useState({});  // {frameIndex: bool} overrides
   const [sendMode, setSendMode]   = useState("standard");
   const [enlarged, setEnlarged]   = useState(null);
 
-  const toggle = (i) => setReviewed(prev => prev.map((f, idx) => idx === i ? { ...f, approved: !f.approved } : f));
+  // Merge incoming frames with local approve/reject overrides
+  const merged = frames.map(f => ({
+    ...f,
+    approved: reviewed[f.frameIndex] !== undefined ? reviewed[f.frameIndex] : f.approved,
+  }));
 
-  const approved  = reviewed.filter(f => f.approved && f.data);
+  const toggle = (frameIndex) => setReviewed(prev => ({
+    ...prev,
+    [frameIndex]: prev[frameIndex] === undefined ? false : !prev[frameIndex],  // default approved, first tap = reject
+  }));
+
+  // Re-derive approved from merged on every render
+  const approved  = merged.filter(f => f.approved && f.data);
   const sendCount = SEND_MODES.find(m => m.key === sendMode)?.count || 20;
 
   // Evenly pick sendCount frames from the approved set
@@ -23,12 +33,31 @@ export function FrameReview({ frames, stroke, onConfirm, onBack }) {
     if (approved.length <= sendCount) return approved;
     const step = (approved.length - 1) / (sendCount - 1);
     return Array.from({ length: sendCount }, (_, i) => approved[Math.round(i * step)]);
-  }, [reviewed, sendMode]);
+  }, [merged, sendMode]);
 
-  const trackedCount = reviewed.filter(f => f.tracked).length;
+  const trackedCount = merged.filter(f => f.tracked).length;
 
   return (
     <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 160 }}>
+
+      {/* Live processing banner */}
+      {processing && processing.done < processing.total && (
+        <div style={{ background: T.dark, padding: "10px 24px", display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ flex: 1, height: 3, background: "rgba(255,255,255,0.2)", borderRadius: 2, overflow: "hidden" }}>
+            <div style={{ width: `${Math.round(processing.done / processing.total * 100)}%`, height: "100%", background: "#fff", transition: "width 0.3s ease" }} />
+          </div>
+          <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: "rgba(255,255,255,0.8)", whiteSpace: "nowrap" }}>
+            {processing.done} / {processing.total}
+          </span>
+        </div>
+      )}
+      {processing && processing.done >= processing.total && (
+        <div style={{ background: "#007A5E", padding: "8px 24px" }}>
+          <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: "#fff", letterSpacing: "0.04em" }}>
+            Processing complete -- {merged.length} frames ready
+          </span>
+        </div>
+      )}
 
       {/* Header */}
       <div style={{ padding: "32px 24px 16px" }}>
@@ -74,7 +103,7 @@ export function FrameReview({ frames, stroke, onConfirm, onBack }) {
 
       {/* Frame grid */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 3, padding: "0 8px" }}>
-        {reviewed.map((frame, i) => {
+        {merged.map((frame, i) => {
           if (!frame.data) return null;
           const inSendSet = toSend.includes(frame);
           return (
@@ -91,7 +120,7 @@ export function FrameReview({ frames, stroke, onConfirm, onBack }) {
                 }}
                 alt={`Frame ${i + 1}`}
               />
-              <button onClick={() => toggle(i)} style={{
+              <button onClick={() => toggle(frame.frameIndex)} style={{
                 position: "absolute", top: 3, right: 3, width: 20, height: 20,
                 borderRadius: "50%", background: frame.approved ? "rgba(0,0,0,0.6)" : T.red,
                 border: "none", color: "#fff", cursor: "pointer",
@@ -108,14 +137,14 @@ export function FrameReview({ frames, stroke, onConfirm, onBack }) {
       </div>
 
       {/* Enlarged modal */}
-      {enlarged !== null && reviewed[enlarged]?.data && (
+      {enlarged !== null && merged[enlarged]?.data && (
         <div onClick={() => setEnlarged(null)}
           style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.95)", zIndex: 200, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 12 }}>
-          <img src={`data:image/jpeg;base64,${reviewed[enlarged].preview || reviewed[enlarged].data}`}
+          <img src={`data:image/jpeg;base64,${merged[enlarged].preview || merged[enlarged].data}`}
             style={{ maxWidth: "100%", maxHeight: "65vh", objectFit: "contain" }} />
-          {reviewed[enlarged].angles?.length > 0 && (
+          {merged[enlarged].angles?.length > 0 && (
             <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap", justifyContent: "center" }}>
-              {reviewed[enlarged].angles.map((a, i) => (
+              {merged[enlarged].angles.map((a, i) => (
                 <span key={i} style={{ background: "#E63946", color: "#fff", padding: "3px 8px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, fontWeight: 500 }}>
                   {a.label} {a.deg}
                 </span>
@@ -127,19 +156,19 @@ export function FrameReview({ frames, stroke, onConfirm, onBack }) {
               style={{ background: "none", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", padding: "8px 16px", fontSize: 13, cursor: "pointer" }}>&larr;</button>
             <div style={{ textAlign: "center" }}>
               <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: "rgba(255,255,255,0.7)" }}>
-                {enlarged + 1} / {reviewed.length} &nbsp;|&nbsp; {reviewed[enlarged].timestamp}s
+                {enlarged + 1} / {reviewed.length} &nbsp;|&nbsp; {merged[enlarged].timestamp}s
               </div>
               <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 10, marginTop: 4, textTransform: "uppercase", letterSpacing: "0.06em",
-                color: reviewed[enlarged].tracked ? "#007A5E" : "rgba(255,255,255,0.35)" }}>
-                {reviewed[enlarged].tracked ? "swimmer tracked" : "no tracking"}
+                color: merged[enlarged].tracked ? "#007A5E" : "rgba(255,255,255,0.35)" }}>
+                {merged[enlarged].tracked ? "swimmer tracked" : "no tracking"}
               </div>
             </div>
             <button onClick={e => { e.stopPropagation(); setEnlarged(i => Math.min(reviewed.length - 1, i + 1)); }}
               style={{ background: "none", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", padding: "8px 16px", fontSize: 13, cursor: "pointer" }}>&rarr;</button>
           </div>
-          <button onClick={e => { e.stopPropagation(); toggle(enlarged); }}
-            style={{ marginTop: 12, background: reviewed[enlarged].approved ? T.red : "#007A5E", border: "none", color: "#fff", padding: "8px 20px", fontSize: 11, cursor: "pointer", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", letterSpacing: "0.08em", textTransform: "uppercase" }}>
-            {reviewed[enlarged].approved ? "Reject this frame" : "Approve this frame"}
+          <button onClick={e => { e.stopPropagation(); toggle(merged[enlarged]?.frameIndex); }}
+            style={{ marginTop: 12, background: merged[enlarged].approved ? T.red : "#007A5E", border: "none", color: "#fff", padding: "8px 20px", fontSize: 11, cursor: "pointer", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+            {merged[enlarged].approved ? "Reject this frame" : "Approve this frame"}
           </button>
           <button onClick={() => setEnlarged(null)}
             style={{ marginTop: 8, background: "none", border: "none", color: "rgba(255,255,255,0.35)", fontSize: 11, cursor: "pointer", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", letterSpacing: "0.08em" }}>
@@ -150,14 +179,16 @@ export function FrameReview({ frames, stroke, onConfirm, onBack }) {
 
       {/* Action bar */}
       <div style={{ position: "fixed", bottom: 72, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.white, borderTop: `1px solid ${T.rule}`, padding: "14px 24px" }}>
-        {approved.length < 4 && (
+        {approved.length < 4 && !processing?.done < processing?.total && (
           <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: "#C4610A", marginBottom: 8, textAlign: "center" }}>
             Approve at least 4 frames to continue
           </div>
         )}
         <Btn onClick={() => onConfirm(toSend)}
-          style={{ opacity: approved.length >= 4 ? 1 : 0.4, pointerEvents: approved.length >= 4 ? "auto" : "none" }}>
-          Analyse {toSend.length} frames
+          style={{ opacity: (approved.length >= 4 && !processing) ? 1 : 0.4, pointerEvents: (approved.length >= 4 && !processing) ? "auto" : "none" }}>
+          {processing && processing.done < processing.total
+            ? `Processing... ${processing.done}/${processing.total}`
+            : `Analyse ${toSend.length} frames`}
         </Btn>
       </div>
     </div>
