@@ -294,71 +294,88 @@ export async function extractTrackedFrames(
         }
       }
 
-      // 5. Create output frame with letterboxed crop
+      // 5. Full-frame preview canvas (for review screen -- shows full context)
+      const preview = document.createElement("canvas");
+      preview.width = OUT_W; preview.height = OUT_H;
+      const pCtx = preview.getContext("2d");
+      pCtx.drawImage(cap, 0, 0, OUT_W, OUT_H);
+
+      // Draw tracking box on preview so user can see what was tracked
+      if (cropBox && cropBox.w > 10) {
+        pCtx.strokeStyle = tracked ? "#007A5E" : "#C4610A";
+        pCtx.lineWidth = 2;
+        pCtx.setLineDash([6, 3]);
+        pCtx.strokeRect(cropBox.x, cropBox.y, cropBox.w, cropBox.h);
+        pCtx.setLineDash([]);
+      }
+
+      // Draw lane ropes on preview
+      if (laneRopes) {
+        const drawRopePreview = (rope, color) => {
+          if (!rope) return;
+          pCtx.strokeStyle = color; pCtx.lineWidth = 1.5;
+          pCtx.setLineDash([8, 4]);
+          pCtx.beginPath();
+          pCtx.moveTo(rope.x1 * OUT_W, rope.y1 * OUT_H);
+          pCtx.lineTo(rope.x2 * OUT_W, rope.y2 * OUT_H);
+          pCtx.stroke(); pCtx.setLineDash([]);
+        };
+        drawRopePreview(laneRopes.upper, "#FFD600");
+        drawRopePreview(laneRopes.lower, "#00E5FF");
+      }
+
+      // Timestamp + tracked badge on preview
+      pCtx.fillStyle = "rgba(0,0,0,0.65)"; pCtx.fillRect(0, OUT_H - 22, 110, 22);
+      pCtx.fillStyle = "#fff"; pCtx.font = "10px sans-serif";
+      pCtx.fillText(`${idx+1}/${times.length}  ${t.toFixed(1)}s`, 5, OUT_H - 7);
+      if (tracked) {
+        pCtx.fillStyle = "#007A5E"; pCtx.fillRect(OUT_W - 56, OUT_H - 22, 56, 22);
+        pCtx.fillStyle = "#fff"; pCtx.fillText("tracked", OUT_W - 52, OUT_H - 7);
+      }
+
+      // 6. Cropped canvas (for sending to Claude -- letterboxed crop only)
       const out = document.createElement("canvas");
       out.width = OUT_W; out.height = OUT_H;
       const oCtx = out.getContext("2d");
       const mapping = drawLetterboxed(oCtx, cap, cropBox.x, cropBox.y, cropBox.w, cropBox.h, OUT_W, OUT_H);
 
-      // 6. Kinematics overlay
+      // 7. Kinematics overlay on cropped canvas
       let angles = [];
       if (poseReady && poseModule && tracked && landmarks && mapping) {
         try {
-          // Remap landmarks from full-frame normalised to crop space
           const remapped = landmarks.map(lm => {
             if (!lm) return lm;
             const relX = (lm.x * OUT_W - cropBox.x) / cropBox.w;
             const relY = (lm.y * OUT_H - cropBox.y) / cropBox.h;
-            return {
-              ...lm,
+            return { ...lm,
               x: (mapping.dx + relX * mapping.dw) / OUT_W,
               y: (mapping.dy + relY * mapping.dh) / OUT_H,
             };
           });
           angles = poseModule.drawPoseOverlay(oCtx, remapped, OUT_W, OUT_H, stroke);
-        } catch (e) {
-          console.warn("[video] overlay error:", e.message);
-        }
+        } catch (e) { console.warn("[video] overlay error:", e.message); }
       }
 
-      // 7. Draw lane rope reference lines on output frame
+      // 8. Lane ropes on cropped canvas too
       if (laneRopes && mapping) {
         const drawRope = (rope, color) => {
           if (!rope) return;
-          // Remap rope coords from full-frame normalised to output canvas
           const remap = (nx, ny) => ({
-            x: mapping.dx + ((nx * OUT_W - (cropBox?.x||0)) / (cropBox?.w||OUT_W)) * mapping.dw,
-            y: mapping.dy + ((ny * OUT_H - (cropBox?.y||0)) / (cropBox?.h||OUT_H)) * mapping.dh,
+            x: mapping.dx + ((nx * OUT_W - cropBox.x) / cropBox.w) * mapping.dw,
+            y: mapping.dy + ((ny * OUT_H - cropBox.y) / cropBox.h) * mapping.dh,
           });
           const p1 = remap(rope.x1, rope.y1), p2 = remap(rope.x2, rope.y2);
-          oCtx.strokeStyle = color;
-          oCtx.lineWidth = 1.5;
-          oCtx.setLineDash([8, 4]);
-          oCtx.beginPath();
-          oCtx.moveTo(p1.x, p1.y);
-          oCtx.lineTo(p2.x, p2.y);
-          oCtx.stroke();
-          oCtx.setLineDash([]);
+          oCtx.strokeStyle = color; oCtx.lineWidth = 1.5; oCtx.setLineDash([8, 4]);
+          oCtx.beginPath(); oCtx.moveTo(p1.x, p1.y); oCtx.lineTo(p2.x, p2.y);
+          oCtx.stroke(); oCtx.setLineDash([]);
         };
         drawRope(laneRopes.upper, "#FFD600");
         drawRope(laneRopes.lower, "#00E5FF");
       }
 
-      // 8. Status badge
-      oCtx.fillStyle = "rgba(0,0,0,0.65)";
-      oCtx.fillRect(0, OUT_H - 22, 100, 22);
-      oCtx.fillStyle = "#fff";
-      oCtx.font = "10px sans-serif";
-      oCtx.fillText(`${idx+1}/${times.length}  ${t.toFixed(1)}s`, 5, OUT_H - 7);
-      if (tracked) {
-        oCtx.fillStyle = "#007A5E";
-        oCtx.fillRect(OUT_W - 56, OUT_H - 22, 56, 22);
-        oCtx.fillStyle = "#fff";
-        oCtx.fillText("tracked", OUT_W - 52, OUT_H - 7);
-      }
-
       frames.push({
-        data:       out.toDataURL("image/jpeg", 0.85).split(",")[1],
+        preview:    preview.toDataURL("image/jpeg", 0.82).split(",")[1], // full frame for review
+        data:       out.toDataURL("image/jpeg", 0.85).split(",")[1],     // cropped for Claude
         frameIndex: idx, timestamp: t, tracked, angles, approved: true,
       });
 
