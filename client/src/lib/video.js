@@ -62,87 +62,115 @@ function seekTo(video, t) {
   });
 }
 
-// --- Lane rope tracking -- horizontal edge detection ------------------------
-// Lane ropes create a strong horizontal edge against pool water.
-// Strategy: divide the frame into vertical strips, find the row with the
-// strongest cumulative vertical gradient in each strip, fit a line.
-// Completely colour-independent -- works for red, yellow, blue, any rope.
+// --- Lane rope tracking -- consecutive-frame optical flow -------------------
+// Tracks N anchor points along each rope from frame N-1 to frame N.
+// Uses block matching on luminance patches -- no colour assumptions.
+// Correctly follows any rotation (including anti-clockwise on rightward pan).
+//
+// Key difference from template matching:
+//   OLD: frame 0 template vs frame N  -- template goes stale over long video
+//   NEW: frame N-1 template vs frame N -- always fresh, follows actual motion
 
-// Find rope line in a frame by scanning for the strongest horizontal edge
-// prevRope: {x1,y1,x2,y2} normalised 0-1
-// Returns updated rope or prevRope if not enough strips found
-function detectRopeEdge(pixelData, W, H, prevRope) {
-  const STRIPS    = 12;   // horizontal strips to sample across frame width
-  const SEARCH_PX = Math.round(H * 0.11); // +-11% of frame height around expected Y
-  const MIN_GRADIENT = W / STRIPS * 6;    // min cumulative gradient to count a strip
+const AF_W = 22, AF_H = 10; // anchor patch size (wide, narrow -- rope is thin)
+const AF_SEARCH = 16;        // search +-16 pixels vertically per anchor
+const AF_N = 7;              // anchor points per rope
 
-  const detected = [];
+// Build initial anchor points along a rope line
+function initAnchors(frameData, W, H, rope) {
+  const anchors = [];
+  for (let i = 0; i < AF_N; i++) {
+    const tx = (i + 0.5) / AF_N;
+    const cx = Math.round(tx * W);
+    const cy = Math.round((rope.y1 + (rope.y2 - rope.y1) * tx) * H);
+    anchors.push({ tx, cx, cy });
+  }
+  return anchors;
+}
 
-  for (let si = 0; si < STRIPS; si++) {
-    const x0 = Math.round((si / STRIPS) * W);
-    const x1 = Math.round(((si + 1) / STRIPS) * W);
-    const sw  = Math.max(1, x1 - x0);
-    const tx  = (si + 0.5) / STRIPS;
-
-    // Expected Y for this strip based on previous rope line
-    const expY = Math.round((prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx) * H);
-    const y0   = Math.max(1, expY - SEARCH_PX);
-    const y1   = Math.min(H - 2, expY + SEARCH_PX);
-
-    let bestRow = -1, bestScore = -1;
-
-    for (let row = y0; row <= y1; row++) {
-      // Cumulative vertical gradient across the strip width
-      let score = 0;
-      for (let col = x0; col < x1; col++) {
-        const i1 = (row       * W + col) * 4;
-        const i2 = ((row + 1) * W + col) * 4;
-        // Luminance difference between this row and next
-        const l1 = pixelData[i1]   * 0.299 + pixelData[i1+1] * 0.587 + pixelData[i1+2] * 0.114;
-        const l2 = pixelData[i2]   * 0.299 + pixelData[i2+1] * 0.587 + pixelData[i2+2] * 0.114;
-        score += Math.abs(l2 - l1);
+// Extract greyscale luminance patch centered at (cx,cy) from pixel data
+function getLuminancePatch(data, W, H, cx, cy) {
+  const hw = AF_W >> 1, hh = AF_H >> 1;
+  const patch = new Float32Array(AF_W * AF_H);
+  for (let row = 0; row < AF_H; row++) {
+    for (let col = 0; col < AF_W; col++) {
+      const x = cx - hw + col, y = cy - hh + row;
+      if (x >= 0 && x < W && y >= 0 && y < H) {
+        const i = (y * W + x) * 4;
+        patch[row * AF_W + col] = data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
+      } else {
+        patch[row * AF_W + col] = 128;
       }
-      if (score > bestScore) { bestScore = score; bestRow = row; }
-    }
-
-    // Only accept strips where the gradient is strong enough
-    if (bestRow >= 0 && bestScore >= MIN_GRADIENT) {
-      detected.push({ x: tx, y: bestRow / H, score: bestScore });
     }
   }
+  return patch;
+}
 
-  // Need at least half the strips to agree
-  if (detected.length < Math.floor(STRIPS * 0.5)) {
-    return prevRope; // not enough signal -- hold last known position
+// Track anchors from prevData to currData -- vertical search only
+// (ropes are horizontal so we only need to find their new Y, not X)
+function trackAnchors(prevData, currData, W, H, anchors) {
+  const updated = [];
+
+  for (const a of anchors) {
+    const prevPatch = getLuminancePatch(prevData, W, H, a.cx, a.cy);
+
+    let bestDy = 0, bestSAD = Infinity;
+    for (let dy = -AF_SEARCH; dy <= AF_SEARCH; dy++) {
+      const newCy = a.cy + dy;
+      if (newCy < 0 || newCy >= H) continue;
+      const hw = AF_W >> 1, hh = AF_H >> 1;
+      let sad = 0;
+      for (let row = 0; row < AF_H; row++) {
+        for (let col = 0; col < AF_W; col++) {
+          const x = a.cx - hw + col, y = newCy - hh + row;
+          let lum = 128;
+          if (x >= 0 && x < W && y >= 0 && y < H) {
+            const i = (y * W + x) * 4;
+            lum = currData[i]*0.299 + currData[i+1]*0.587 + currData[i+2]*0.114;
+          }
+          sad += Math.abs(lum - prevPatch[row * AF_W + col]);
+        }
+      }
+      if (sad < bestSAD) { bestSAD = sad; bestDy = dy; }
+    }
+
+    // Accept match if SAD is reasonable -- reject if scene totally changed
+    const maxSAD = AF_W * AF_H * 38;
+    updated.push({
+      tx:  a.tx,
+      cx:  a.cx,
+      cy:  bestSAD < maxSAD ? a.cy + bestDy : a.cy, // hold if poor match
+    });
   }
 
-  // Least-squares line fit through detected strip positions
-  const n   = detected.length;
-  const sx  = detected.reduce((s, p) => s + p.x, 0);
-  const sy  = detected.reduce((s, p) => s + p.y, 0);
-  const sxy = detected.reduce((s, p) => s + p.x * p.y, 0);
-  const sx2 = detected.reduce((s, p) => s + p.x * p.x, 0);
+  return updated;
+}
+
+// Fit a rope line through current anchor positions
+function anchorsToRope(anchors, H, prevRope) {
+  const n   = anchors.length;
+  const sx  = anchors.reduce((s, a) => s + a.tx,      0);
+  const sy  = anchors.reduce((s, a) => s + a.cy / H,  0);
+  const sxy = anchors.reduce((s, a) => s + a.tx * a.cy / H, 0);
+  const sx2 = anchors.reduce((s, a) => s + a.tx * a.tx, 0);
   const den = n * sx2 - sx * sx;
   if (Math.abs(den) < 0.0001) return prevRope;
 
   const slope = (n * sxy - sx * sy) / den;
   const icept = (sy - slope * sx) / n;
 
-  // Clamp to reasonable values and apply slow EMA for smooth rotation
-  const newY1 = Math.max(0.02, Math.min(0.98, icept));
-  const newY2 = Math.max(0.02, Math.min(0.98, icept + slope));
+  // No EMA needed -- anchor tracking already provides smooth motion
   return {
-    x1: 0, y1: ema(prevRope.y1, newY1, 0.25),
-    x2: 1, y2: ema(prevRope.y2, newY2, 0.25),
+    x1: 0, y1: Math.max(0.02, Math.min(0.98, icept)),
+    x2: 1, y2: Math.max(0.02, Math.min(0.98, icept + slope)),
   };
 }
 
-// Prevent ropes crossing each other
+// Prevent ropes crossing
 function preventRopeCrossing(upper, lower, minGap = 0.025) {
   if (!upper || !lower) return { upper, lower };
   const u = { ...upper }, l = { ...lower };
-  if (u.y1 > l.y1 - minGap) { const m = (u.y1+l.y1)/2; u.y1 = m-minGap/2; l.y1 = m+minGap/2; }
-  if (u.y2 > l.y2 - minGap) { const m = (u.y2+l.y2)/2; u.y2 = m-minGap/2; l.y2 = m+minGap/2; }
+  if (u.y1 > l.y1 - minGap) { const m=(u.y1+l.y1)/2; u.y1=m-minGap/2; l.y1=m+minGap/2; }
+  if (u.y2 > l.y2 - minGap) { const m=(u.y2+l.y2)/2; u.y2=m-minGap/2; l.y2=m+minGap/2; }
   return { upper: u, lower: l };
 }
 
@@ -214,11 +242,13 @@ export async function extractTrackedFrames(
   let lastGoodCrop = null;
   let lostCount = 0;
 
-  // Lane rope tracking -- edge detection needs no seeding, starts from frame 1
-  let activeRopes = laneRopes ? {
+  // Lane rope tracking via optical flow -- anchor points tracked frame-to-frame
+  let activeRopes  = laneRopes ? {
     upper: laneRopes.upper ? { ...laneRopes.upper } : null,
     lower: laneRopes.lower ? { ...laneRopes.lower } : null,
   } : null;
+  let ropeAnchors  = { upper: null, lower: null };
+  let prevFrameData = null; // pixel data from previous frame for flow tracking
 
   // IoU helper -- prevents tracker jumping to wrong person
   function iou(a, b) {
@@ -258,15 +288,31 @@ export async function extractTrackedFrames(
           (z.w / z.cw) * OUT_W, (z.h / z.ch) * OUT_H, 14)
       );
 
-      // 3. Lane rope tracking -- horizontal edge detection
+      // 3. Lane rope tracking -- optical flow frame-to-frame
       if (activeRopes) {
-        // Single full-frame read for all rope operations
-        const frameData = capCtx.getImageData(0, 0, OUT_W, OUT_H).data;
-        if (activeRopes.upper) activeRopes.upper = detectRopeEdge(frameData, OUT_W, OUT_H, activeRopes.upper);
-        if (activeRopes.lower) activeRopes.lower = detectRopeEdge(frameData, OUT_W, OUT_H, activeRopes.lower);
-        const safe = preventRopeCrossing(activeRopes.upper, activeRopes.lower);
-        activeRopes.upper = safe.upper;
-        activeRopes.lower = safe.lower;
+        const currData = capCtx.getImageData(0, 0, OUT_W, OUT_H).data;
+
+        if (!prevFrameData) {
+          // First frame -- seed anchors from drawn rope positions
+          if (activeRopes.upper) ropeAnchors.upper = initAnchors(currData, OUT_W, OUT_H, activeRopes.upper);
+          if (activeRopes.lower) ropeAnchors.lower = initAnchors(currData, OUT_W, OUT_H, activeRopes.lower);
+        } else {
+          // Track anchors from previous frame to current frame
+          if (ropeAnchors.upper) {
+            ropeAnchors.upper = trackAnchors(prevFrameData, currData, OUT_W, OUT_H, ropeAnchors.upper);
+            activeRopes.upper = anchorsToRope(ropeAnchors.upper, OUT_H, activeRopes.upper);
+          }
+          if (ropeAnchors.lower) {
+            ropeAnchors.lower = trackAnchors(prevFrameData, currData, OUT_W, OUT_H, ropeAnchors.lower);
+            activeRopes.lower = anchorsToRope(ropeAnchors.lower, OUT_H, activeRopes.lower);
+          }
+          const safe = preventRopeCrossing(activeRopes.upper, activeRopes.lower);
+          activeRopes.upper = safe.upper;
+          activeRopes.lower = safe.lower;
+        }
+
+        // Store current frame data for next iteration
+        prevFrameData = currData;
       }
 
       // 4. Pose detection on FULL FRAME -- then crop around result
