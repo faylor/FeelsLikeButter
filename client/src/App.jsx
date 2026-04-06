@@ -74,26 +74,31 @@ export default function App() {
     setStep("preview");
   };
 
-  // -- Preview confirmed: start full processing -----------------------------
+  // -- Preview confirmed: start processing, stream frames to review ----------
   const handlePreviewConfirm = async ({ landmarks, bb, time, laneRopes }) => {
     setPreviewTimes(bb ? [time] : []);
-    setStep("processing");
+    setProcessedFrames([]);  // clear previous
     setProcessProgress(null);
     setError(null);
+    setStep("review");  // go straight to review -- frames stream in
+
     try {
-      const frames = await extractTrackedFrames(
+      await extractTrackedFrames(
         videoFile, crop, privacyZones,
         0.5, stroke,
-        (done, total, phase) => setProcessProgress({ done, total, phase }),
+        // Progress callback -- also delivers each frame as it completes
+        (done, total, phase, newFrame) => {
+          setProcessProgress({ done, total, phase });
+          if (newFrame) {
+            setProcessedFrames(prev => [...prev, newFrame]);
+          }
+        },
         landmarks, bb, laneRopes
       );
-      setProcessedFrames(frames);
-      setProcessProgress(null);
-      setStep("review");
+      setProcessProgress(null); // done
     } catch (e) {
       setError(`Processing failed -- ${e.message}`);
       setProcessProgress(null);
-      setStep("upload");
     }
   };
 
@@ -116,9 +121,17 @@ export default function App() {
   // -- Save session ----------------------------------------------------------
   const handleSave = async () => {
     if (!result || !authUser) return;
+    // Store preview images + metadata but not the full Claude data (saves storage)
+    const framesToSave = approvedFrames.map(f => ({
+      preview:   f.preview || f.data,
+      timestamp: f.timestamp,
+      tracked:   f.tracked,
+      angles:    f.angles || [],
+    }));
     const session = {
       stroke, score: result.overallScore, note,
       summary: result.summary, topPriority: result.topPriority, items: result.items,
+      frames: framesToSave,
     };
     try {
       await saveSession(authUser.id, session);
