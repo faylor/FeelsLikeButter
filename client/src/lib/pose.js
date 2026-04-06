@@ -1,11 +1,13 @@
 // --- MediaPipe Pose for swimming kinematics ----------------------------------
-// Loaded dynamically from CDN at runtime -- not bundled by Vite
-// CDN: @mediapipe/tasks-vision IIFE bundle exposes globals on window
+// @mediapipe/tasks-vision is declared external in vite.config.js
+// and mapped to CDN via importmap in index.html
+// This means the import below works at runtime but is not bundled by Rollup
 
-const WASM_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+import { PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+
+const WASM_PATH = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
-// Landmark indices
 const LM = {
   NOSE: 0,
   L_SHOULDER: 11, R_SHOULDER: 12,
@@ -18,12 +20,12 @@ const LM = {
 
 const SKELETON = [
   [LM.L_SHOULDER, LM.R_SHOULDER],
-  [LM.L_SHOULDER, LM.L_ELBOW],   [LM.L_ELBOW, LM.L_WRIST],
-  [LM.R_SHOULDER, LM.R_ELBOW],   [LM.R_ELBOW, LM.R_WRIST],
-  [LM.L_SHOULDER, LM.L_HIP],     [LM.R_SHOULDER, LM.R_HIP],
+  [LM.L_SHOULDER, LM.L_ELBOW], [LM.L_ELBOW, LM.L_WRIST],
+  [LM.R_SHOULDER, LM.R_ELBOW], [LM.R_ELBOW, LM.R_WRIST],
+  [LM.L_SHOULDER, LM.L_HIP],   [LM.R_SHOULDER, LM.R_HIP],
   [LM.L_HIP,      LM.R_HIP],
-  [LM.L_HIP,      LM.L_KNEE],    [LM.L_KNEE, LM.L_ANKLE],
-  [LM.R_HIP,      LM.R_KNEE],    [LM.R_KNEE, LM.R_ANKLE],
+  [LM.L_HIP,      LM.L_KNEE],  [LM.L_KNEE, LM.L_ANKLE],
+  [LM.R_HIP,      LM.R_KNEE],  [LM.R_KNEE, LM.R_ANKLE],
 ];
 
 function angleBetween(a, b, c) {
@@ -35,7 +37,6 @@ function angleBetween(a, b, c) {
   return Math.round(Math.acos(Math.max(-1, Math.min(1, dot / mag))) * 180 / Math.PI);
 }
 
-// Bounding box of a pose -- normalised 0-1, with padding
 export function getPoseBoundingBox(landmarks, padding = 0.15) {
   const vis = landmarks.filter(l => (l.visibility || 0) > 0.25);
   if (vis.length < 5) return null;
@@ -44,7 +45,6 @@ export function getPoseBoundingBox(landmarks, padding = 0.15) {
   const maxX = Math.min(1, Math.max(...xs) + padding);
   const minY = Math.max(0, Math.min(...ys) - padding);
   const maxY = Math.min(1, Math.max(...ys) + padding);
-  // Pose confidence = average visibility of core landmarks
   const core = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP];
   const conf = core.reduce((s, i) => s + (landmarks[i]?.visibility || 0), 0) / core.length;
   return {
@@ -54,7 +54,6 @@ export function getPoseBoundingBox(landmarks, padding = 0.15) {
   };
 }
 
-// Stroke-specific angle annotations
 function getAngles(stroke, lm) {
   const angles = [];
   const add = (label, a, b, c) => {
@@ -65,7 +64,6 @@ function getAngles(stroke, lm) {
     if (deg !== null) angles.push({ label, deg, x: pb.x, y: pb.y });
   };
 
-  // Body line angle vs horizontal (always)
   const ls = lm[LM.L_SHOULDER], rs = lm[LM.R_SHOULDER];
   if (ls && rs && (ls.visibility||0) > 0.4 && (rs.visibility||0) > 0.4) {
     const deg = Math.abs(Math.round(Math.atan2(ls.y - rs.y, ls.x - rs.x) * 180 / Math.PI));
@@ -98,11 +96,9 @@ function getAngles(stroke, lm) {
   return angles;
 }
 
-// Draw skeleton + angle labels onto canvas
 export function drawPoseOverlay(ctx, landmarks, W, H, stroke) {
   if (!landmarks?.length) return [];
 
-  // Skeleton
   ctx.lineWidth = 2.5;
   ctx.strokeStyle = "rgba(255,255,255,0.75)";
   SKELETON.forEach(([a, b]) => {
@@ -114,7 +110,6 @@ export function drawPoseOverlay(ctx, landmarks, W, H, stroke) {
     ctx.stroke();
   });
 
-  // Joint dots
   Object.values(LM).forEach(idx => {
     const l = landmarks[idx];
     if (!l || (l.visibility||0) < 0.25) return;
@@ -124,7 +119,6 @@ export function drawPoseOverlay(ctx, landmarks, W, H, stroke) {
     ctx.fill();
   });
 
-  // Angle labels
   const angles = getAngles(stroke, landmarks);
   ctx.font = "bold 12px sans-serif";
   angles.forEach(({ label, deg, x, y }) => {
@@ -133,13 +127,7 @@ export function drawPoseOverlay(ctx, landmarks, W, H, stroke) {
     const text = `${label} ${deg}`;
     const tw = ctx.measureText(text).width;
     ctx.fillStyle = "#E63946";
-    ctx.beginPath();
-    ctx.roundRect?.(px - tw/2 - 5, py - 13, tw + 10, 17, 3);
-    ctx.fill();
-    if (!ctx.roundRect) {
-      ctx.fillStyle = "#E63946";
-      ctx.fillRect(px - tw/2 - 5, py - 13, tw + 10, 17);
-    }
+    ctx.fillRect(px - tw/2 - 5, py - 13, tw + 10, 17);
     ctx.fillStyle = "#FFFFFF";
     ctx.textAlign = "center";
     ctx.fillText(text, px, py);
@@ -150,7 +138,7 @@ export function drawPoseOverlay(ctx, landmarks, W, H, stroke) {
 }
 
 // --- Singleton detector ------------------------------------------------------
-let detector   = null;
+let detector    = null;
 let initPromise = null;
 
 export async function initPoseDetector() {
@@ -158,84 +146,34 @@ export async function initPoseDetector() {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    // Load CDN bundle if not already loaded
-    if (!window._mpVisionLoaded) {
-      console.log("[pose] loading MediaPipe from CDN...");
-      await new Promise((res, rej) => {
-        const s = document.createElement("script");
-        s.src = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.js";
-        s.crossOrigin = "anonymous";
-        s.onload = () => { window._mpVisionLoaded = true; res(); };
-        s.onerror = () => rej(new Error("Failed to load MediaPipe CDN"));
-        document.head.appendChild(s);
-      });
-      // Brief pause for globals to register
-      await new Promise(r => setTimeout(r, 150));
-    }
-
-    // The IIFE bundle from @mediapipe/tasks-vision@0.10.14 puts exports
-    // directly on window -- scan for PoseLandmarker
-    let PoseLandmarker, FilesetResolver;
-
-    // Try known namespace locations first
-    for (const ns of [window, window.mpTasksVision, window.MediaPipeTasksVision, window.mediapipeTasks]) {
-      if (ns?.PoseLandmarker && ns?.FilesetResolver) {
-        PoseLandmarker  = ns.PoseLandmarker;
-        FilesetResolver = ns.FilesetResolver;
-        console.log("[pose] found MediaPipe API");
-        break;
-      }
-    }
-
-    // Deep scan of window properties if not found above
-    if (!PoseLandmarker) {
-      for (const key of Object.keys(window)) {
-        const val = window[key];
-        if (val && typeof val === "object" && val.PoseLandmarker && val.FilesetResolver) {
-          PoseLandmarker  = val.PoseLandmarker;
-          FilesetResolver = val.FilesetResolver;
-          console.log("[pose] found MediaPipe API at window." + key);
-          break;
-        }
-      }
-    }
-
-    if (!PoseLandmarker || !FilesetResolver) {
-      throw new Error("MediaPipe API not found after CDN load. Check network connectivity.");
-    }
-
     console.log("[pose] creating PoseLandmarker...");
-    const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
-    );
+    const vision = await FilesetResolver.forVisionTasks(WASM_PATH);
     detector = await PoseLandmarker.createFromOptions(vision, {
       baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
       runningMode: "IMAGE",
       numPoses: 3,
     });
-    console.log("[pose] PoseLandmarker ready");
+    console.log("[pose] ready");
     return detector;
   })();
 
   return initPromise;
 }
 
-// --- Detect all poses on a canvas --------------------------------------------
 export async function detectPoses(canvas) {
   const det = await initPoseDetector();
-  // Tasks Vision IMAGE mode accepts HTMLCanvasElement directly
   const result = det.detect(canvas);
   const poses  = result?.landmarks || [];
+  console.log(`[pose] ${poses.length} pose(s) detected`);
   return poses;
 }
 
-// --- Pick pose closest to target (normalised coords) -------------------------
 export function closestPose(poses, targetCx, targetCy) {
   if (!poses?.length) return null;
   let best = null, bestDist = Infinity;
   poses.forEach(landmarks => {
     const bb = getPoseBoundingBox(landmarks);
-    if (!bb || bb.confidence < 0.3) return; // skip low-confidence detections
+    if (!bb || bb.confidence < 0.3) return;
     const dist = Math.hypot(bb.cx - targetCx, bb.cy - targetCy);
     if (dist < bestDist) { bestDist = dist; best = { landmarks, bb }; }
   });
