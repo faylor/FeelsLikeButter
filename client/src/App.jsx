@@ -75,7 +75,7 @@ export default function App() {
   };
 
   // -- Preview confirmed: start processing, stream frames to review ----------
-  const handlePreviewConfirm = async ({ landmarks, bb, time, laneRopes }) => {
+  const handlePreviewConfirm = async ({ landmarks, bb, time, laneRopes, ropeSeedTime }) => {
     setPreviewTimes(bb ? [time] : []);
     setProcessedFrames([]);  // clear previous
     setProcessProgress(null);
@@ -93,7 +93,7 @@ export default function App() {
             setProcessedFrames(prev => [...prev, newFrame]);
           }
         },
-        landmarks, bb, laneRopes
+        landmarks, bb, laneRopes, ropeSeedTime
       );
       setProcessProgress(null); // done
     } catch (e) {
