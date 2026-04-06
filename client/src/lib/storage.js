@@ -77,6 +77,7 @@ export async function loadSessions(userId) {
     summary:     r.summary,
     topPriority: r.top_priority,
     items:       r.items,
+    frames:      r.frames || [],
   }));
 }
 
@@ -89,6 +90,7 @@ export async function saveSession(userId, session) {
     summary:      session.summary,
     top_priority: session.topPriority,
     items:        session.items,
+    frames:       session.frames || null,  // [{preview, timestamp, tracked, angles}]
   }).select().single();
   if (error) throw error;
   return data.id;
