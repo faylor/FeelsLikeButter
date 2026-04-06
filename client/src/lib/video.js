@@ -71,9 +71,10 @@ function seekTo(video, t) {
 //   OLD: frame 0 template vs frame N  -- template goes stale over long video
 //   NEW: frame N-1 template vs frame N -- always fresh, follows actual motion
 
-const AF_W = 22, AF_H = 10; // anchor patch size (wide, narrow -- rope is thin)
-const AF_SEARCH = 16;        // search +-16 pixels vertically per anchor
-const AF_N = 7;              // anchor points per rope
+const AF_W = 64, AF_H = 16; // wide patch captures multiple rope float cycles
+const AF_SY = 28;            // vertical search +-28px
+const AF_SX = 12;            // horizontal search +-12px (rope texture shifts with pan)
+const AF_N  = 9;             // anchor points per rope
 
 // Build initial anchor points along a rope line
 function initAnchors(frameData, W, H, rope) {
@@ -87,78 +88,80 @@ function initAnchors(frameData, W, H, rope) {
   return anchors;
 }
 
-// Extract greyscale luminance patch centered at (cx,cy) from pixel data
+// Extract greyscale luminance patch centered at (cx,cy)
 function getLuminancePatch(data, W, H, cx, cy) {
   const hw = AF_W >> 1, hh = AF_H >> 1;
   const patch = new Float32Array(AF_W * AF_H);
   for (let row = 0; row < AF_H; row++) {
     for (let col = 0; col < AF_W; col++) {
       const x = cx - hw + col, y = cy - hh + row;
-      if (x >= 0 && x < W && y >= 0 && y < H) {
-        const i = (y * W + x) * 4;
-        patch[row * AF_W + col] = data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114;
-      } else {
-        patch[row * AF_W + col] = 128;
-      }
+      patch[row * AF_W + col] = (x >= 0 && x < W && y >= 0 && y < H)
+        ? data[(y * W + x) * 4] * 0.299 + data[(y * W + x) * 4 + 1] * 0.587 + data[(y * W + x) * 4 + 2] * 0.114
+        : 128;
     }
   }
   return patch;
 }
 
-// Track anchors from prevData to currData -- vertical search only
-// (ropes are horizontal so we only need to find their new Y, not X)
+// Track anchors from prevData to currData -- 2D search (horizontal + vertical)
 function trackAnchors(prevData, currData, W, H, anchors) {
-  const updated = [];
-
-  for (const a of anchors) {
+  const rawDys = [];
+  const updated = anchors.map(a => {
     const prevPatch = getLuminancePatch(prevData, W, H, a.cx, a.cy);
+    let bestDy = 0, bestDx = 0, bestSAD = Infinity;
+    const hw = AF_W >> 1, hh = AF_H >> 1;
 
-    let bestDy = 0, bestSAD = Infinity;
-    for (let dy = -AF_SEARCH; dy <= AF_SEARCH; dy++) {
-      const newCy = a.cy + dy;
-      if (newCy < 0 || newCy >= H) continue;
-      const hw = AF_W >> 1, hh = AF_H >> 1;
-      let sad = 0;
-      for (let row = 0; row < AF_H; row++) {
-        for (let col = 0; col < AF_W; col++) {
-          const x = a.cx - hw + col, y = newCy - hh + row;
-          let lum = 128;
-          if (x >= 0 && x < W && y >= 0 && y < H) {
-            const i = (y * W + x) * 4;
-            lum = currData[i]*0.299 + currData[i+1]*0.587 + currData[i+2]*0.114;
+    for (let dy = -AF_SY; dy <= AF_SY; dy++) {
+      for (let dx = -AF_SX; dx <= AF_SX; dx++) {
+        const newCy = a.cy + dy, newCx = a.cx + dx;
+        if (newCy < hh || newCy >= H - hh || newCx < hw || newCx >= W - hw) continue;
+        let sad = 0;
+        for (let row = 0; row < AF_H; row++) {
+          for (let col = 0; col < AF_W; col++) {
+            const x = newCx - hw + col, y = newCy - hh + row;
+            const lum = (x >= 0 && x < W && y >= 0 && y < H)
+              ? currData[(y * W + x) * 4] * 0.299 + currData[(y * W + x) * 4 + 1] * 0.587 + currData[(y * W + x) * 4 + 2] * 0.114
+              : 128;
+            sad += Math.abs(lum - prevPatch[row * AF_W + col]);
           }
-          sad += Math.abs(lum - prevPatch[row * AF_W + col]);
         }
+        if (sad < bestSAD) { bestSAD = sad; bestDy = dy; bestDx = dx; }
       }
-      if (sad < bestSAD) { bestSAD = sad; bestDy = dy; }
     }
 
-    // Accept match if SAD is reasonable -- reject if scene totally changed
-    const maxSAD = AF_W * AF_H * 38;
-    updated.push({
-      tx:  a.tx,
-      cx:  a.cx,
-      cy:  bestSAD < maxSAD ? a.cy + bestDy : a.cy, // hold if poor match
+    const maxSAD = AF_W * AF_H * 32;
+    const matched = bestSAD < maxSAD;
+    if (matched) rawDys.push(bestDy);
+    return { tx: a.tx, cx: a.cx + (matched ? bestDx : 0), cy: a.cy + (matched ? bestDy : 0) };
+  });
+
+  // Outlier rejection -- if an anchor moved very differently from the median, clamp it
+  if (rawDys.length >= 4) {
+    rawDys.sort((a, b) => a - b);
+    const medDy = rawDys[Math.floor(rawDys.length / 2)];
+    return updated.map((a, i) => {
+      const dy = a.cy - anchors[i].cy;
+      // If this anchor moved more than 12px away from median, clamp it
+      if (Math.abs(dy - medDy) > 12) {
+        return { ...a, cy: anchors[i].cy + medDy };
+      }
+      return a;
     });
   }
-
   return updated;
 }
 
 // Fit a rope line through current anchor positions
 function anchorsToRope(anchors, H, prevRope) {
   const n   = anchors.length;
-  const sx  = anchors.reduce((s, a) => s + a.tx,      0);
-  const sy  = anchors.reduce((s, a) => s + a.cy / H,  0);
+  const sx  = anchors.reduce((s, a) => s + a.tx,       0);
+  const sy  = anchors.reduce((s, a) => s + a.cy / H,   0);
   const sxy = anchors.reduce((s, a) => s + a.tx * a.cy / H, 0);
   const sx2 = anchors.reduce((s, a) => s + a.tx * a.tx, 0);
   const den = n * sx2 - sx * sx;
   if (Math.abs(den) < 0.0001) return prevRope;
-
   const slope = (n * sxy - sx * sy) / den;
   const icept = (sy - slope * sx) / n;
-
-  // No EMA needed -- anchor tracking already provides smooth motion
   return {
     x1: 0, y1: Math.max(0.02, Math.min(0.98, icept)),
     x2: 1, y2: Math.max(0.02, Math.min(0.98, icept + slope)),
@@ -220,7 +223,7 @@ export async function extractTrackedFrames(
   }
 
   // Build timestamp list
-  const maxFrames = 80;
+  const maxFrames = 140;
   const step = Math.max(intervalSecs, duration / maxFrames);
   const times = [];
   for (let t = 0.3; t < duration - 0.1; t += step) {
