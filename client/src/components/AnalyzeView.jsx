@@ -8,7 +8,50 @@ import { FrameReview } from "./FrameReview.jsx";
 import { VideoPreview } from "./VideoPreview.jsx";
 
 // --- Processing screen --------------------------------------------------------
-function ProcessingScreen({ progress }) {
+function ProcessingScreen({ progress, ropeCount }) {
+  const phase = progress?.phase || "Initialising...";
+  const done  = progress?.done  || 0;
+  const total = progress?.total || 0;
+  const pct   = total > 0 ? Math.round((done / total) * 100) : 0;
+
+  return (
+    <div style={{ padding: "80px 24px", textAlign: "center" }}>
+      <div style={{ width: 32, height: 1, background: T.dark, margin: "0 auto 32px" }} />
+      <Label style={{ display: "block", marginBottom: 12, color: T.black }}>Processing Video</Label>
+
+      <div style={{ maxWidth: 280, margin: "0 auto 20px" }}>
+        <div style={{ height: 2, background: T.rule, borderRadius: 1, overflow: "hidden", marginBottom: 10 }}>
+          <div style={{ width: `${pct}%`, height: "100%", background: T.dark, transition: "width 0.4s ease" }} />
+        </div>
+        <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, marginBottom: 6 }}>
+          {phase}
+        </div>
+        {total > 1 && (
+          <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted }}>
+            {done} / {total} frames
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
+        {[
+          ["#007A5E", "Kinematics overlay being applied"],
+          ["#007A5E", "Faces obscured before any upload"],
+          ropeCount > 0
+            ? ["#007A5E", `Lane masking active -- ${ropeCount} keyframes`]
+            : ["#C4610A", "No lane ropes drawn -- crowd may be detected"],
+        ].map(([col, text]) => (
+          <div key={text} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <div style={{ width: 5, height: 5, borderRadius: "50%", background: col }} />
+            <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: col, letterSpacing: "0.04em" }}>
+              {text}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
   const phase = progress?.phase || "Initialising...";
   const done  = progress?.done  || 0;
   const total = progress?.total || 0;
@@ -234,7 +277,7 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
   if (step === "preview") {
     return <VideoPreview videoFile={videoFile} crop={crop} onConfirm={onPreviewConfirm} onBack={() => setStep("privacy")} />;
   }
-  if (step === "processing") return <ProcessingScreen progress={processProgress} />;
+  if (step === "processing") return <ProcessingScreen progress={processProgress} ropeCount={processProgress?.ropeCount ?? 0} />;
   if (step === "review") {
     return <FrameReview frames={processedFrames} stroke={stroke} onConfirm={onReviewConfirm} onBack={onReviewBack} processing={processProgress} />;
   }
