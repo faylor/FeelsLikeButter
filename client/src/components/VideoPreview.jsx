@@ -159,15 +159,14 @@ function RopeKeyframesStep({ videoFile, initialSeed, onConfirm, onBack }) {
         <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 12px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
           &larr; Back
         </button>
-        <Label style={{ color: T.red, marginBottom: 4 }}>Draw Lane Ropes</Label>
+        <Label style={{ color: T.red, marginBottom: 4 }}>Step 1 of 2 -- Lane Ropes</Label>
         <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 20, fontWeight: 300, color: T.black, marginBottom: 8 }}>
           Mark Lane Boundaries
         </div>
         <Rule />
         <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.6, margin: "12px 0 0" }}>
           Tap <strong>Adjust</strong> on each frame and draw the upper and lower ropes of your swimmer's lane.
-          Everything outside the ropes is blacked out before detection -- the crowd cannot be detected as swimmers.
-          Draw on as many keyframes as possible for best accuracy.
+          Everything outside the ropes is blacked out -- crowd cannot be detected. Draw on as many frames as possible.
         </p>
         {readyCount === 0 && (
           <div style={{ marginTop: 10, padding: "8px 12px", background: "#FFF0F0", borderLeft: `3px solid ${T.red}`, fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.red }}>
@@ -253,18 +252,19 @@ function KeyframeThumbnail({ kf }) {
   return <canvas ref={canvasRef} width={CW} height={CH} style={{ width: "100%", display: "block" }} />;
 }
 
-// --- Step 1: Confirm swimmer -------------------------------------------------
+// --- Step 2: Confirm swimmer (after ropes) -------------------------------------------------
 export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
   const [frames, setFrames]     = useState([]);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState(null);
   const [selected, setSelected] = useState(null);
   const [enlarged, setEnlarged] = useState(null);
-  const [page, setPage]         = useState("swimmer");
+  const [ropeKeyframes, setRopeKeyframes] = useState([]);
+  const [page, setPage]         = useState("ropes");
 
   useEffect(() => {
     if (!videoFile) return;
-    setLoading(true); setError(null); setSelected(null); setPage("swimmer");
+    setLoading(true); setError(null); setSelected(null); setPage("ropes");
     extractPreviewFrames(videoFile)
       .then(f => {
         setFrames(f); setLoading(false);
@@ -277,7 +277,7 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
   const handleSelect    = (fi, pi) =>
     setSelected(prev => prev?.frameIdx === fi && prev?.poseIdx === pi ? null : { frameIdx: fi, poseIdx: pi });
 
-  // Step 2: rope keyframes
+  // Step 1: rope keyframes (first)
   if (page === "ropes") {
     // Seed position from selected swimmer or initial crop
     const frame = selected ? frames[selected.frameIdx] : null;
@@ -291,14 +291,11 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
         videoFile={videoFile}
         initialSeed={initialSeed}
         onConfirm={(ropeKeyframes) => {
-          onConfirm({
-            landmarks:     pose?.landmarks || null,
-            bb:            pose?.bb || null,
-            time:          frame?.time,
-            ropeKeyframes, // [{time, upper, lower}, ...] -- replaces single laneRopes
-          });
+          // Store ropes and move to swimmer selection step
+          setRopeKeyframes(ropeKeyframes);
+          setPage("swimmer");
         }}
-        onBack={() => setPage("swimmer")}
+        onBack={onBack}
       />
     );
   }
@@ -319,10 +316,10 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
   return (
     <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 160 }}>
       <div style={{ padding: "32px 24px 20px" }}>
-        <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 14px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-          &larr; Back
+        <button onClick={() => setPage("ropes")} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 14px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+          &larr; Back to Lane Ropes
         </button>
-        <Label style={{ color: T.red, marginBottom: 6 }}>Step 1 of 2</Label>
+        <Label style={{ color: T.red, marginBottom: 6 }}>Step 2 of 2 -- Swimmer</Label>
         <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 22, fontWeight: 300, letterSpacing: "-0.02em", color: T.black, marginBottom: 8 }}>
           Confirm Swimmer
         </div>
@@ -428,8 +425,17 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
             Tap a box to confirm your swimmer
           </div>
         )}
-        <Btn onClick={() => setPage("ropes")}>
-          {selected ? "Swimmer confirmed -- next: Lane Ropes" : "Skip -- Go to Lane Ropes"}
+        <Btn onClick={() => {
+          const frame = selected ? frames[selected.frameIdx] : null;
+          const pose  = frame?.poses.find(p => p.idx === selected?.poseIdx);
+          onConfirm({
+            landmarks:     pose?.landmarks || null,
+            bb:            pose?.bb || null,
+            time:          frame?.time,
+            ropeKeyframes,
+          });
+        }}>
+          {selected ? "Confirmed -- Start Processing" : "Skip -- Start Processing"}
         </Btn>
       </div>
     </div>
