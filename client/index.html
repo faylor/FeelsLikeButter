@@ -1,17 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-      <meta charset="UTF-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-              <title>Tigers 🐯</title>
-                  <style>
-                        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-                              body { -webkit-font-smoothing: antialiased; }
-                                  </style>
-                                    </head>
-                                      <body>
-                                          <div id="root"></div>
-                                              <script type="module" src="/src/main.jsx"></script>
-                                                </body>
-                                                </html>
-                                                
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tigers</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      body { -webkit-font-smoothing: antialiased; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
