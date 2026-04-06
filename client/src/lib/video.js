@@ -196,6 +196,11 @@ export async function extractTrackedFrames(
       // 3. Interpolate rope positions from user keyframes
       const activeRopes = ropeKeyframes ? interpolateRopes(ropeKeyframes, t) : { upper: null, lower: null };
 
+      if (idx === 0) {
+        console.log(`[ropes] keyframes count: ${ropeKeyframes?.length ?? 0}`);
+        console.log(`[ropes] frame 0 at t=${t}: upper=${JSON.stringify(activeRopes.upper)}, lower=${JSON.stringify(activeRopes.lower)}`);
+      }
+
       // 4a. Capture CLEAN frame for preview BEFORE masking
       const cleanCap = document.createElement("canvas");
       cleanCap.width = OUT_W; cleanCap.height = OUT_H;
@@ -400,25 +405,25 @@ export async function extractTrackedFrames(
           pCtx.closePath(); pCtx.fill();
         }
 
-        // Draw thick visible rope lines on top of everything
-        const drawRopeLine = (rope, color) => {
+        // Draw thick solid rope lines right on the boundary
+        const drawRopeLine = (rope, color, label) => {
           if (!rope) return;
-          // Thick glowing line
-          pCtx.shadowColor = color; pCtx.shadowBlur = 6;
-          pCtx.strokeStyle = color; pCtx.lineWidth = 3; pCtx.setLineDash([]);
+          pCtx.shadowColor = color; pCtx.shadowBlur = 8;
+          pCtx.strokeStyle = color; pCtx.lineWidth = 4; pCtx.setLineDash([]);
           pCtx.beginPath();
-          pCtx.moveTo(rope.x1 * OUT_W, rope.y1 * OUT_H);
-          pCtx.lineTo(rope.x2 * OUT_W, rope.y2 * OUT_H);
+          pCtx.moveTo(0, rope.y1 * OUT_H);
+          pCtx.lineTo(OUT_W, rope.y2 * OUT_H);
           pCtx.stroke();
           pCtx.shadowBlur = 0;
-          // Label
-          const label = color === "#FFD600" ? "Upper rope" : "Lower rope";
+          // Label pill
           pCtx.fillStyle = color;
+          pCtx.fillRect(6, rope.y1 * OUT_H - 18, 80, 18);
+          pCtx.fillStyle = "#000";
           pCtx.font = "bold 10px sans-serif";
-          pCtx.fillText(label, rope.x1 * OUT_W + 4, rope.y1 * OUT_H - 5);
+          pCtx.fillText(label, 10, rope.y1 * OUT_H - 5);
         };
-        drawRopeLine(activeRopes.upper, "#FFD600");
-        drawRopeLine(activeRopes.lower, "#00E5FF");
+        drawRopeLine(activeRopes.upper, "#FFD600", "Upper rope");
+        drawRopeLine(activeRopes.lower, "#00E5FF", "Lower rope");
       }
 
       // Draw tight pose bounding box -- solid bright line shows detected person
@@ -650,28 +655,55 @@ function autoDetectRope(pixelData, W, H, prevUpper, prevLower) {
 export function interpolateRopes(ropeKeyframes, t) {
   if (!ropeKeyframes?.length) return { upper: null, lower: null };
 
-  // Find surrounding keyframes
-  let before = null, after = null;
-  for (const kf of ropeKeyframes) {
-    if (kf.time <= t) before = kf;
-    if (kf.time >= t && !after) after = kf;
-  }
+  // Filter to only keyframes that actually have ropes drawn
+  const withUpper = ropeKeyframes.filter(k => k.upper);
+  const withLower = ropeKeyframes.filter(k => k.lower);
 
-  if (!before && !after) return { upper: null, lower: null };
-  if (!before) return { upper: after.upper, lower: after.lower };
-  if (!after)  return { upper: before.upper, lower: before.lower };
-  if (before === after) return { upper: before.upper, lower: before.lower };
+  const interpSide = (drawn, t) => {
+    if (!drawn.length) return null;
+    // Before first keyframe -- use first
+    if (t <= drawn[0].time) return drawn[0];
+    // After last keyframe -- use last
+    if (t >= drawn[drawn.length - 1].time) return drawn[drawn.length - 1];
+    // Find surrounding keyframes
+    let before = drawn[0], after = drawn[drawn.length - 1];
+    for (let i = 0; i < drawn.length - 1; i++) {
+      if (drawn[i].time <= t && drawn[i + 1].time >= t) {
+        before = drawn[i]; after = drawn[i + 1]; break;
+      }
+    }
+    if (before === after) return before;
+    const alpha = (t - before.time) / (after.time - before.time);
+    const r1 = before.upper ?? before.lower;
+    const r2 = after.upper   ?? after.lower;
+    if (!r1 || !r2) return before;
+    return {
+      x1: 0, y1: r1.y1 + alpha * (r2.y1 - r1.y1),
+      x2: 1, y2: r1.y2 + alpha * (r2.y2 - r1.y2),
+    };
+  };
 
-  // Linear interpolation
-  const alpha = (t - before.time) / (after.time - before.time);
-  const lerp  = (a, b) => a === null || b === null ? (a || b) : a + alpha * (b - a);
-  const lerpRope = (r1, r2) => r1 && r2 ? {
-    x1: 0, y1: lerp(r1.y1, r2.y1), x2: 1, y2: lerp(r1.y2, r2.y2),
-  } : (r1 || r2);
+  // Separate interpolation for upper and lower
+  const upperDrawn = ropeKeyframes.filter(k => k.upper).map(k => ({ ...k, _r: k.upper }));
+  const lowerDrawn = ropeKeyframes.filter(k => k.lower).map(k => ({ ...k, _r: k.lower }));
+
+  const interp1 = (drawn, t) => {
+    if (!drawn.length) return null;
+    if (t <= drawn[0].time) return drawn[0]._r;
+    if (t >= drawn[drawn.length - 1].time) return drawn[drawn.length - 1]._r;
+    for (let i = 0; i < drawn.length - 1; i++) {
+      if (drawn[i].time <= t && drawn[i + 1].time >= t) {
+        const a = (t - drawn[i].time) / (drawn[i + 1].time - drawn[i].time);
+        const r1 = drawn[i]._r, r2 = drawn[i + 1]._r;
+        return { x1: 0, y1: r1.y1 + a * (r2.y1 - r1.y1), x2: 1, y2: r1.y2 + a * (r2.y2 - r1.y2) };
+      }
+    }
+    return drawn[drawn.length - 1]._r;
+  };
 
   return {
-    upper: lerpRope(before.upper, after.upper),
-    lower: lerpRope(before.lower, after.lower),
+    upper: interp1(upperDrawn, t),
+    lower: interp1(lowerDrawn, t),
   };
 }
 
