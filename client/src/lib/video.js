@@ -177,7 +177,7 @@ function preventRopeCrossing(upper, lower, minGap = 0.025) {
 // Uses 640x360 capture -- high enough for analysis, safe on mobile memory
 export async function extractTrackedFrames(
   videoFile, initialCrop, redactZones, intervalSecs = 0.5, stroke, onProgress,
-  seedLandmarks = null, seedBb = null, laneRopes = null
+  seedLandmarks = null, seedBb = null, laneRopes = null, ropeSeedTime = null
 ) {
   const OUT_W = 640, OUT_H = 360;
 
@@ -231,6 +231,16 @@ export async function extractTrackedFrames(
   if (times[times.length - 1] < lastT) times.push(lastT);
 
   console.log(`[video] ${times.length} frames over ${duration.toFixed(1)}s`);
+
+  // If rope seed time is known, insert it at the front of the list
+  // This ensures anchor seeding happens on the exact frame the user drew on
+  if (ropeSeedTime !== null && laneRopes) {
+    const st = parseFloat(Math.max(0.1, Math.min(duration - 0.1, ropeSeedTime)).toFixed(2));
+    if (!times.includes(st)) times.unshift(st);
+    else times.sort((a, b) => a === st ? -1 : b === st ? 1 : a - b); // move to front
+    console.log(`[video] rope seed frame inserted at t=${st}s`);
+  }
+
   if (onProgress) onProgress(0, times.length, `Extracting ${times.length} frames...`);
 
   // Tracking state -- initialise from confirmed seed if available
@@ -291,11 +301,14 @@ export async function extractTrackedFrames(
       // 3. Lane rope tracking -- optical flow frame-to-frame
       if (activeRopes) {
         const currData = capCtx.getImageData(0, 0, OUT_W, OUT_H).data;
+        const isSeedFrame = ropeSeedTime !== null &&
+          Math.abs(t - parseFloat(Math.max(0.1, Math.min(duration - 0.1, ropeSeedTime)).toFixed(2))) < 0.05;
 
-        if (!prevFrameData) {
-          // First frame -- seed anchors from drawn rope positions
+        if (!prevFrameData || isSeedFrame) {
+          // Seed anchors from this frame -- rope coords match exactly
           if (activeRopes.upper) ropeAnchors.upper = initAnchors(currData, OUT_W, OUT_H, activeRopes.upper);
           if (activeRopes.lower) ropeAnchors.lower = initAnchors(currData, OUT_W, OUT_H, activeRopes.lower);
+          if (isSeedFrame) console.log(`[rope] anchors seeded on drawing frame t=${t}s`);
         } else {
           // Track anchors from previous frame to current frame
           if (ropeAnchors.upper) {
@@ -310,9 +323,13 @@ export async function extractTrackedFrames(
           activeRopes.upper = safe.upper;
           activeRopes.lower = safe.lower;
         }
-
-        // Store current frame data for next iteration
         prevFrameData = currData;
+
+        // Skip emitting the seed frame itself -- it's only for calibration
+        if (isSeedFrame) {
+          if (onProgress) onProgress(idx + 1, times.length, `Seeding rope anchors...`, null);
+          continue;
+        }
       }
 
       // 4. Pose detection on FULL FRAME -- then crop around result
