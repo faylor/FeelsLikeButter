@@ -62,7 +62,86 @@ function seekTo(video, t) {
   });
 }
 
-// --- Extract ALL frames with tracking + kinematics ---------------------------
+// --- Lane rope tracking via color sampling -----------------------------------
+// Samples the rope color from initial drawn position, then tracks it frame by frame
+
+function sampleRopeColor(ctx, rope, canvasW, canvasH, samples = 8) {
+  // Sample colors along the drawn line
+  const colors = [];
+  for (let i = 0; i < samples; i++) {
+    const t = (i + 0.5) / samples;
+    const x = Math.round((rope.x1 + (rope.x2 - rope.x1) * t) * canvasW);
+    const y = Math.round((rope.y1 + (rope.y2 - rope.y1) * t) * canvasH);
+    if (x < 0 || x >= canvasW || y < 0 || y >= canvasH) continue;
+    const d = ctx.getImageData(x, y, 1, 1).data;
+    colors.push([d[0], d[1], d[2]]);
+  }
+  if (!colors.length) return null;
+  // Average color
+  return colors.reduce((acc, c) => [acc[0]+c[0], acc[1]+c[1], acc[2]+c[2]], [0,0,0])
+    .map(v => v / colors.length);
+}
+
+function colorDistance(a, b) {
+  return Math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2);
+}
+
+function trackRopeInFrame(ctx, ropeColor, prevRope, canvasW, canvasH) {
+  // Scan along expected line position, searching 15% vertically for rope color
+  const searchBand = 0.15;
+  const xSamples   = 20; // sample points along x axis
+  const ySamples   = 20; // vertical scan range per point
+
+  const detectedPoints = [];
+
+  for (let xi = 0; xi < xSamples; xi++) {
+    const tx = (xi + 0.5) / xSamples;
+    // Expected Y at this X based on previous rope position
+    const expectedY = prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx;
+    const x = Math.round(tx * canvasW);
+
+    let bestY = null, bestDist = 60; // max color distance to count as rope
+    for (let yi = -ySamples; yi <= ySamples; yi++) {
+      const y = Math.round((expectedY + (yi / ySamples) * searchBand) * canvasH);
+      if (y < 0 || y >= canvasH || x < 0 || x >= canvasW) continue;
+      const d = ctx.getImageData(x, y, 1, 1).data;
+      const dist = colorDistance(ropeColor, [d[0], d[1], d[2]]);
+      if (dist < bestDist) { bestDist = dist; bestY = y / canvasH; }
+    }
+    if (bestY !== null) detectedPoints.push({ x: tx, y: bestY });
+  }
+
+  if (detectedPoints.length < 4) return prevRope; // not enough points -- keep previous
+
+  // Fit line through detected points (least squares)
+  const n = detectedPoints.length;
+  const sumX = detectedPoints.reduce((s, p) => s + p.x, 0);
+  const sumY = detectedPoints.reduce((s, p) => s + p.y, 0);
+  const sumXY = detectedPoints.reduce((s, p) => s + p.x * p.y, 0);
+  const sumX2 = detectedPoints.reduce((s, p) => s + p.x * p.x, 0);
+  const denom = n * sumX2 - sumX * sumX;
+
+  if (Math.abs(denom) < 0.0001) return prevRope;
+
+  const slope     = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+
+  // New rope as line from x=0 to x=1
+  const newRope = {
+    x1: 0,     y1: Math.max(0, Math.min(1, intercept)),
+    x2: 1,     y2: Math.max(0, Math.min(1, intercept + slope)),
+  };
+
+  // EMA with previous position -- smooth out noise
+  return {
+    x1: 0,
+    y1: ema(prevRope.y1, newRope.y1, 0.45),
+    x2: 1,
+    y2: ema(prevRope.y2, newRope.y2, 0.45),
+  };
+}
+
+
 // Uses 640x360 capture -- high enough for analysis, safe on mobile memory
 export async function extractTrackedFrames(
   videoFile, initialCrop, redactZones, intervalSecs = 0.5, stroke, onProgress,
@@ -130,6 +209,11 @@ export async function extractTrackedFrames(
   let lastGoodCrop = null;
   let lostCount = 0;
 
+  // Lane rope tracking state -- starts from drawn position, tracked per frame
+  let activeRopes = laneRopes ? { upper: laneRopes.upper ? { ...laneRopes.upper } : null, lower: laneRopes.lower ? { ...laneRopes.lower } : null } : null;
+  let ropeColors  = { upper: null, lower: null };
+  let ropesSeeded = false; // sample colors from first frame
+
   // IoU helper -- prevents tracker jumping to wrong person
   function iou(a, b) {
     const ax2 = a.cx + a.w/2, ay2 = a.cy + a.h/2;
@@ -167,6 +251,26 @@ export async function extractTrackedFrames(
           (z.x / z.cw) * OUT_W, (z.y / z.ch) * OUT_H,
           (z.w / z.cw) * OUT_W, (z.h / z.ch) * OUT_H, 14)
       );
+
+      // 3. Dynamic lane rope tracking
+      if (activeRopes) {
+        const capCtxRO = cap.getContext("2d");
+        if (!ropesSeeded) {
+          // Sample rope colors from this first frame
+          if (activeRopes.upper) ropeColors.upper = sampleRopeColor(capCtxRO, activeRopes.upper, OUT_W, OUT_H);
+          if (activeRopes.lower) ropeColors.lower = sampleRopeColor(capCtxRO, activeRopes.lower, OUT_W, OUT_H);
+          ropesSeeded = true;
+          console.log("[video] rope colors sampled:", ropeColors.upper, ropeColors.lower);
+        } else {
+          // Track ropes using color matching
+          if (activeRopes.upper && ropeColors.upper) {
+            activeRopes.upper = trackRopeInFrame(capCtxRO, ropeColors.upper, activeRopes.upper, OUT_W, OUT_H);
+          }
+          if (activeRopes.lower && ropeColors.lower) {
+            activeRopes.lower = trackRopeInFrame(capCtxRO, ropeColors.lower, activeRopes.lower, OUT_W, OUT_H);
+          }
+        }
+      }
 
       // 4. Pose detection on FULL FRAME -- then crop around result
       // Never crop before detecting -- swimmer may be outside initial box
@@ -238,13 +342,13 @@ export async function extractTrackedFrames(
             cropBox.w = Math.min(cropBox.w, OUT_W - cropBox.x);
             cropBox.h = Math.min(cropBox.h, OUT_H - cropBox.y);
 
-            // If lane ropes defined, clamp crop to stay within lane
-            if (laneRopes) {
-              const upperY = laneRopes.upper
-                ? Math.min(laneRopes.upper.y1, laneRopes.upper.y2) * OUT_H
+            // If lane ropes defined, clamp crop to stay within tracked lane
+            if (activeRopes) {
+              const upperY = activeRopes.upper
+                ? Math.min(activeRopes.upper.y1, activeRopes.upper.y2) * OUT_H
                 : 0;
-              const lowerY = laneRopes.lower
-                ? Math.max(laneRopes.lower.y1, laneRopes.lower.y2) * OUT_H
+              const lowerY = activeRopes.lower
+                ? Math.max(activeRopes.lower.y1, activeRopes.lower.y2) * OUT_H
                 : OUT_H;
               cropBox.y = Math.max(cropBox.y, upperY - 10);
               const bottom = Math.min(cropBox.y + cropBox.h, lowerY + 10);
@@ -310,7 +414,7 @@ export async function extractTrackedFrames(
       }
 
       // Draw lane ropes on preview
-      if (laneRopes) {
+      if (activeRopes) {
         const drawRopePreview = (rope, color) => {
           if (!rope) return;
           pCtx.strokeStyle = color; pCtx.lineWidth = 1.5;
@@ -320,8 +424,8 @@ export async function extractTrackedFrames(
           pCtx.lineTo(rope.x2 * OUT_W, rope.y2 * OUT_H);
           pCtx.stroke(); pCtx.setLineDash([]);
         };
-        drawRopePreview(laneRopes.upper, "#FFD600");
-        drawRopePreview(laneRopes.lower, "#00E5FF");
+        drawRopePreview(activeRopes.upper, "#FFD600");
+        drawRopePreview(activeRopes.lower, "#00E5FF");
       }
 
       // Timestamp + tracked badge on preview
@@ -357,7 +461,7 @@ export async function extractTrackedFrames(
       }
 
       // 8. Lane ropes on cropped canvas too
-      if (laneRopes && mapping) {
+      if (activeRopes && mapping) {
         const drawRope = (rope, color) => {
           if (!rope) return;
           const remap = (nx, ny) => ({
@@ -369,8 +473,8 @@ export async function extractTrackedFrames(
           oCtx.beginPath(); oCtx.moveTo(p1.x, p1.y); oCtx.lineTo(p2.x, p2.y);
           oCtx.stroke(); oCtx.setLineDash([]);
         };
-        drawRope(laneRopes.upper, "#FFD600");
-        drawRope(laneRopes.lower, "#00E5FF");
+        drawRope(activeRopes.upper, "#FFD600");
+        drawRope(activeRopes.lower, "#00E5FF");
       }
 
       frames.push({
