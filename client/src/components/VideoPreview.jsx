@@ -159,14 +159,21 @@ function RopeKeyframesStep({ videoFile, initialSeed, onConfirm, onBack }) {
         <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 12px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
           &larr; Back
         </button>
-        <Label style={{ color: T.red, marginBottom: 4 }}>Lane Ropes</Label>
+        <Label style={{ color: T.red, marginBottom: 4 }}>Draw Lane Ropes</Label>
         <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 20, fontWeight: 300, color: T.black, marginBottom: 8 }}>
-          Confirm every 5 seconds
+          Mark Lane Boundaries
         </div>
         <Rule />
         <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.6, margin: "12px 0 0" }}>
-          Yellow lines are auto-detected. Tap any frame to adjust. Rope positions are interpolated between keyframes -- no tracking drift.
+          Tap <strong>Adjust</strong> on each frame and draw the upper and lower ropes of your swimmer's lane.
+          Everything outside the ropes is blacked out before detection -- the crowd cannot be detected as swimmers.
+          Draw on as many keyframes as possible for best accuracy.
         </p>
+        {readyCount === 0 && (
+          <div style={{ marginTop: 10, padding: "8px 12px", background: "#FFF0F0", borderLeft: `3px solid ${T.red}`, fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.red }}>
+            Draw ropes on at least one keyframe to continue
+          </div>
+        )}
       </div>
 
       {error && (
@@ -187,7 +194,7 @@ function RopeKeyframesStep({ videoFile, initialSeed, onConfirm, onBack }) {
                   {kf.time.toFixed(1)}s
                 </span>
                 <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 10, color: ok ? "#00E676" : "#FFD600" }}>
-                  {ok ? "Ropes set" : kf.upper || kf.lower ? "Partial" : "Auto-detected"}
+                  {ok ? "Ropes set" : kf.upper || kf.lower ? "Partial" : "Not drawn yet"}
                 </span>
               </div>
               <button onClick={() => setEditing(i)}
@@ -210,8 +217,9 @@ function RopeKeyframesStep({ videoFile, initialSeed, onConfirm, onBack }) {
 
       {/* Action bar */}
       <div style={{ position: "fixed", bottom: 72, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.white, borderTop: `1px solid ${T.rule}`, padding: "14px 16px" }}>
-        <Btn onClick={() => onConfirm(keyframes)}>
-          {`Confirm ${keyframes.length} keyframes -- Start Processing`}
+        <Btn onClick={() => onConfirm(keyframes)}
+          style={{ opacity: readyCount > 0 ? 1 : 0.4, pointerEvents: readyCount > 0 ? "auto" : "none" }}>
+          {readyCount > 0 ? `Confirm ${keyframes.length} keyframes -- Start Processing` : "Draw ropes on at least one frame first"}
         </Btn>
         <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted, textAlign: "center", marginTop: 6 }}>
           Ropes will be interpolated between keyframes
