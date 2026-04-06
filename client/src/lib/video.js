@@ -62,79 +62,110 @@ function seekTo(video, t) {
   });
 }
 
-// --- Lane rope tracking via color sampling -----------------------------------
-// Tracks rope lines frame-by-frame using the initial drawn position as seed.
-// Uses slow EMA so lines rotate gradually with camera pan rather than jumping.
+// --- Lane rope tracking -- HSV color category approach ----------------------
+// Lane ropes are always one of: RED, YELLOW, or DARK BLUE.
+// We classify on the seed frame then use the category for robust per-frame tracking.
+// Much more reliable than exact RGB matching -- robust to lighting changes.
 
-function sampleRopeColor(ctx, rope, W, H, samples = 10) {
-  const colors = [];
+function rgbToHsv(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0, s = max === 0 ? 0 : d / max, v = max;
+  if (d > 0) {
+    if (max === r)      h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+    else if (max === g) h = ((b - r) / d + 2) / 6;
+    else                h = ((r - g) / d + 4) / 6;
+  }
+  return { h: h * 360, s, v };
+}
+
+// Classify a pixel as rope-colored or not, per rope color category
+function isRopeColor(r, g, b, category) {
+  const { h, s, v } = rgbToHsv(r, g, b);
+  switch (category) {
+    case "red":
+      // Red wraps around 0/360 in HSV
+      return v > 0.25 && s > 0.35 && (h < 20 || h > 340);
+    case "yellow":
+      return v > 0.35 && s > 0.40 && h > 35 && h < 75;
+    case "blue":
+      return v > 0.10 && s > 0.25 && h > 185 && h < 265;
+    default:
+      return false;
+  }
+}
+
+// Identify which rope color category is most present along a drawn line
+function identifyRopeCategory(ctx, rope, W, H) {
+  const counts = { red: 0, yellow: 0, blue: 0 };
+  const samples = 16;
+  // Sample a band of pixels around the line (not just on it)
   for (let i = 0; i < samples; i++) {
     const t = (i + 0.5) / samples;
-    const x = Math.round((rope.x1 + (rope.x2 - rope.x1) * t) * W);
-    const y = Math.round((rope.y1 + (rope.y2 - rope.y1) * t) * H);
-    if (x < 0 || x >= W || y < 0 || y >= H) continue;
-    const d = ctx.getImageData(x, y, 1, 1).data;
-    colors.push([d[0], d[1], d[2]]);
+    const px = Math.round((rope.x1 + (rope.x2 - rope.x1) * t) * W);
+    const baseY = Math.round((rope.y1 + (rope.y2 - rope.y1) * t) * H);
+    for (let dy = -4; dy <= 4; dy++) {
+      const py = baseY + dy;
+      if (px < 0 || px >= W || py < 0 || py >= H) continue;
+      const d = ctx.getImageData(px, py, 1, 1).data;
+      for (const cat of ["red", "yellow", "blue"]) {
+        if (isRopeColor(d[0], d[1], d[2], cat)) counts[cat]++;
+      }
+    }
   }
-  if (!colors.length) return null;
-  return colors.reduce((a, c) => [a[0]+c[0], a[1]+c[1], a[2]+c[2]], [0,0,0])
-    .map(v => Math.round(v / colors.length));
+  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  console.log(`[rope] color votes:`, counts, `-> ${best[0]} (${best[1]} hits)`);
+  // Need at least some confident hits to classify
+  return best[1] >= 3 ? best[0] : null;
 }
 
-function colorDistance(a, b) {
-  // Weighted Euclidean -- green channel less important in pool water
-  return Math.sqrt(
-    1.2*(a[0]-b[0])**2 +
-    0.8*(a[1]-b[1])**2 +
-    1.0*(a[2]-b[2])**2
-  );
-}
+// Scan a full frame for a rope of known color category
+// Returns updated rope line or prevRope if not enough points found
+function trackRopeByColor(ctx, category, prevRope, W, H) {
+  if (!category) return prevRope;
 
-function trackRopeInFrame(ctx, ropeColor, prevRope, W, H) {
-  if (!ropeColor) return prevRope;
-
-  // How far (in pixels) to search vertically around expected line
-  const searchPx  = Math.round(H * 0.12); // 12% of frame height
-  const xSteps    = 24;
-  const maxDist   = 45; // reject pixels further than this from rope color
-
+  const searchPx = Math.round(H * 0.14); // search 14% of height around expected Y
+  const xSteps   = 32;
   const detected = [];
 
   for (let xi = 0; xi < xSteps; xi++) {
-    const tx = (xi + 0.5) / xSteps;
-    const px = Math.round(tx * W);
+    const tx    = (xi + 0.5) / xSteps;
+    const px    = Math.round(tx * W);
+    const expY  = (prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx) * H;
 
-    // Expected Y in pixels from previous rope
-    const expectedY = (prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx) * H;
-
-    let bestY = null, bestDist = maxDist;
+    // Scan vertically, collect all rope-colored pixels, pick median
+    const hits = [];
     for (let dy = -searchPx; dy <= searchPx; dy++) {
-      const py = Math.round(expectedY + dy);
+      const py = Math.round(expY + dy);
       if (py < 0 || py >= H || px < 0 || px >= W) continue;
       const d = ctx.getImageData(px, py, 1, 1).data;
-      const dist = colorDistance(ropeColor, [d[0], d[1], d[2]]);
-      if (dist < bestDist) { bestDist = dist; bestY = py / H; }
+      if (isRopeColor(d[0], d[1], d[2], category)) hits.push(py);
     }
-    // Only accept if we found a good color match
-    if (bestY !== null) detected.push({ x: tx, y: bestY });
+
+    if (hits.length >= 2) {
+      // Use median of hits -- more robust than min/max
+      hits.sort((a, b) => a - b);
+      const median = hits[Math.floor(hits.length / 2)] / H;
+      detected.push({ x: tx, y: median });
+    }
   }
 
-  // Need enough confident points to fit a line
-  if (detected.length < 6) {
-    console.log(`[rope] only ${detected.length} points -- keeping previous`);
-    return prevRope;
-  }
+  console.log(`[rope:${category}] ${detected.length}/${xSteps} columns detected`);
 
-  // Least-squares line fit through detected points
-  const n = detected.length;
-  const sx = detected.reduce((s, p) => s + p.x, 0);
-  const sy = detected.reduce((s, p) => s + p.y, 0);
+  // Need at least 8 confident columns -- fewer means rope not visible
+  if (detected.length < 8) return prevRope;
+
+  // Least-squares line fit
+  const n   = detected.length;
+  const sx  = detected.reduce((s, p) => s + p.x, 0);
+  const sy  = detected.reduce((s, p) => s + p.y, 0);
   const sxy = detected.reduce((s, p) => s + p.x * p.y, 0);
   const sx2 = detected.reduce((s, p) => s + p.x * p.x, 0);
-  const denom = n * sx2 - sx * sx;
-  if (Math.abs(denom) < 0.0001) return prevRope;
+  const den = n * sx2 - sx * sx;
+  if (Math.abs(den) < 0.0001) return prevRope;
 
-  const slope = (n * sxy - sx * sy) / denom;
+  const slope     = (n * sxy - sx * sy) / den;
   const intercept = (sy - slope * sx) / n;
 
   const fitted = {
@@ -142,32 +173,21 @@ function trackRopeInFrame(ctx, ropeColor, prevRope, W, H) {
     x2: 1, y2: Math.max(0.01, Math.min(0.99, intercept + slope)),
   };
 
-  // Slow EMA -- alpha 0.12 means ropes rotate ~1/8th toward new position per frame
-  // This gives smooth gradual rotation following camera pan, not jitter
+  // Slow EMA -- gradual rotation with camera pan, not frame-to-frame jitter
   return {
     x1: 0,
-    y1: ema(prevRope.y1, fitted.y1, 0.12),
+    y1: ema(prevRope.y1, fitted.y1, 0.15),
     x2: 1,
-    y2: ema(prevRope.y2, fitted.y2, 0.12),
+    y2: ema(prevRope.y2, fitted.y2, 0.15),
   };
 }
 
-// Ensure upper rope stays above lower rope at both ends -- prevent crossing
+// Ensure upper rope stays above lower rope -- prevent crossing
 function preventRopeCrossing(upper, lower, minGap = 0.03) {
   if (!upper || !lower) return { upper, lower };
   const u = { ...upper }, l = { ...lower };
-  // At x=0
-  if (u.y1 > l.y1 - minGap) {
-    const mid = (u.y1 + l.y1) / 2;
-    u.y1 = mid - minGap / 2;
-    l.y1 = mid + minGap / 2;
-  }
-  // At x=1
-  if (u.y2 > l.y2 - minGap) {
-    const mid = (u.y2 + l.y2) / 2;
-    u.y2 = mid - minGap / 2;
-    l.y2 = mid + minGap / 2;
-  }
+  if (u.y1 > l.y1 - minGap) { const m = (u.y1+l.y1)/2; u.y1 = m-minGap/2; l.y1 = m+minGap/2; }
+  if (u.y2 > l.y2 - minGap) { const m = (u.y2+l.y2)/2; u.y2 = m-minGap/2; l.y2 = m+minGap/2; }
   return { upper: u, lower: l };
 }
 
@@ -241,9 +261,9 @@ export async function extractTrackedFrames(
   let lostCount = 0;
 
   // Lane rope tracking state -- starts from drawn position, tracked per frame
-  let activeRopes = laneRopes ? { upper: laneRopes.upper ? { ...laneRopes.upper } : null, lower: laneRopes.lower ? { ...laneRopes.lower } : null } : null;
-  let ropeColors  = { upper: null, lower: null };
-  let ropesSeeded = false; // sample colors from first frame
+  let activeRopes    = laneRopes ? { upper: laneRopes.upper ? { ...laneRopes.upper } : null, lower: laneRopes.lower ? { ...laneRopes.lower } : null } : null;
+  let ropeCategories = { upper: null, lower: null }; // "red" | "yellow" | "blue" | null
+  let ropesSeeded    = false;
 
   // IoU helper -- prevents tracker jumping to wrong person
   function iou(a, b) {
@@ -287,17 +307,22 @@ export async function extractTrackedFrames(
       if (activeRopes) {
         const capCtxRO = cap.getContext("2d");
         if (!ropesSeeded) {
-          // Sample rope colors from this first frame
-          if (activeRopes.upper) ropeColors.upper = sampleRopeColor(capCtxRO, activeRopes.upper, OUT_W, OUT_H);
-          if (activeRopes.lower) ropeColors.lower = sampleRopeColor(capCtxRO, activeRopes.lower, OUT_W, OUT_H);
+          // Classify rope color category from drawn position on first frame
+          if (activeRopes.upper) {
+            ropeCategories.upper = identifyRopeCategory(capCtxRO, activeRopes.upper, OUT_W, OUT_H);
+            console.log(`[rope] upper: ${ropeCategories.upper}`);
+          }
+          if (activeRopes.lower) {
+            ropeCategories.lower = identifyRopeCategory(capCtxRO, activeRopes.lower, OUT_W, OUT_H);
+            console.log(`[rope] lower: ${ropeCategories.lower}`);
+          }
           ropesSeeded = true;
-          console.log("[video] rope colors sampled:", ropeColors.upper, ropeColors.lower);
         } else {
-          // Track ropes and prevent crossing
-          if (activeRopes.upper && ropeColors.upper)
-            activeRopes.upper = trackRopeInFrame(capCtxRO, ropeColors.upper, activeRopes.upper, OUT_W, OUT_H);
-          if (activeRopes.lower && ropeColors.lower)
-            activeRopes.lower = trackRopeInFrame(capCtxRO, ropeColors.lower, activeRopes.lower, OUT_W, OUT_H);
+          // Track using HSV category matching
+          if (activeRopes.upper && ropeCategories.upper)
+            activeRopes.upper = trackRopeByColor(capCtxRO, ropeCategories.upper, activeRopes.upper, OUT_W, OUT_H);
+          if (activeRopes.lower && ropeCategories.lower)
+            activeRopes.lower = trackRopeByColor(capCtxRO, ropeCategories.lower, activeRopes.lower, OUT_W, OUT_H);
           const safe = preventRopeCrossing(activeRopes.upper, activeRopes.lower);
           activeRopes.upper = safe.upper;
           activeRopes.lower = safe.lower;
