@@ -62,8 +62,28 @@ function RopeCanvas({ frame, lines, onChange }) {
   const onUp   = (e) => {
     if (!drawing || !startPt) return;
     const end = getPos(e);
-    if (Math.hypot(end.x - startPt.x, end.y - startPt.y) > 20)
-      onChange({ ...lines, [drawing]: { x1: startPt.x/CW, y1: startPt.y/CH, x2: end.x/CW, y2: end.y/CH } });
+    if (Math.hypot(end.x - startPt.x, end.y - startPt.y) > 10) {
+      // Extrapolate the drawn line to full canvas width (x=0 to x=1)
+      // so partial drags still produce a full-width rope line
+      const dx = end.x - startPt.x;
+      const dy = end.y - startPt.y;
+      let x1n = 0, y1n, x2n = 1, y2n;
+      if (Math.abs(dx) < 1) {
+        // Near-vertical drag -- use horizontal line at midpoint Y
+        const midY = (startPt.y + end.y) / 2;
+        y1n = midY / CH; y2n = midY / CH;
+      } else {
+        const slope = dy / dx;
+        // Y at x=0: startPt.y - slope * startPt.x
+        y1n = (startPt.y - slope * startPt.x) / CH;
+        // Y at x=CW: startPt.y + slope * (CW - startPt.x)
+        y2n = (startPt.y + slope * (CW - startPt.x)) / CH;
+      }
+      // Clamp to canvas bounds
+      y1n = Math.max(0.01, Math.min(0.99, y1n));
+      y2n = Math.max(0.01, Math.min(0.99, y2n));
+      onChange({ ...lines, [drawing]: { x1: x1n, y1: y1n, x2: x2n, y2: y2n } });
+    }
     setDrawing(null); setStartPt(null); setLiveEnd(null);
   };
 
@@ -77,9 +97,12 @@ function RopeCanvas({ frame, lines, onChange }) {
   });
 
   return (
-    <div>
+    // overscroll-behavior prevents browser back-swipe from stealing the touch
+    <div style={{ overscrollBehavior: "none", touchAction: "none" }}>
       <canvas ref={canvasRef} width={CW} height={CH}
-        style={{ width: "100%", display: "block", cursor: drawing ? "crosshair" : "default", touchAction: "none" }}
+        style={{ width: "100%", display: "block", cursor: drawing ? "crosshair" : "default",
+          touchAction: "none", border: `2px solid ${drawing ? "#fff" : T.rule}`,
+          overscrollBehavior: "none" }}
         onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
         onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
       />
@@ -107,7 +130,10 @@ function KeyframeEditor({ kf, onSave, onClose }) {
         <RopeCanvas frame={kf} lines={lines} onChange={setLines} />
       </div>
       <div style={{ display: "flex", gap: 12, marginTop: 14 }}>
-        <button onClick={() => { onSave(lines); onClose(); }}
+        <button onClick={() => {
+          console.log(`[KeyframeEditor] saving at ${kf.time.toFixed(1)}s:`, lines);
+          onSave(lines); onClose();
+        }}
           style={{ background: T.dark, border: "none", color: "#fff", padding: "10px 24px", fontSize: 12, cursor: "pointer", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif" }}>
           Save
         </button>
@@ -154,7 +180,7 @@ function RopeKeyframesStep({ videoFile, initialSeed, onConfirm, onBack }) {
   );
 
   return (
-    <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 160 }}>
+    <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 160, overscrollBehavior: "none", touchAction: "none" }}>
       <div style={{ padding: "24px 24px 16px" }}>
         <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 12px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
           &larr; Back
@@ -428,6 +454,8 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
         <Btn onClick={() => {
           const frame = selected ? frames[selected.frameIdx] : null;
           const pose  = frame?.poses.find(p => p.idx === selected?.poseIdx);
+          const drawn = ropeKeyframes.filter(k => k.upper || k.lower);
+          console.log(`[VideoPreview] confirming: ropeKeyframes=${ropeKeyframes.length} drawn=${drawn.length}`, drawn);
           onConfirm({
             landmarks:     pose?.landmarks || null,
             bb:            pose?.bb || null,
