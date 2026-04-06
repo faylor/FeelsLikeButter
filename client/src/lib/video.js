@@ -83,7 +83,7 @@ function preventRopeCrossing(upper, lower, minGap = 0.025) {
 // Uses 640x360 capture -- high enough for analysis, safe on mobile memory
 export async function extractTrackedFrames(
   videoFile, initialCrop, redactZones, intervalSecs = 0.5, stroke, onProgress,
-  seedLandmarks = null, seedBb = null, ropeKeyframes = null
+  seedLandmarks = null, seedBb = null, ropeKeyframes = null, raceStartTime = null
 ) {
   const OUT_W = 640, OUT_H = 360;
 
@@ -194,7 +194,7 @@ export async function extractTrackedFrames(
       );
 
       // 3. Interpolate rope positions from user keyframes
-      const activeRopes = ropeKeyframes ? interpolateRopes(ropeKeyframes, t) : { upper: null, lower: null };
+      const activeRopes = ropeKeyframes ? interpolateRopes(ropeKeyframes, t, raceStartTime) : { upper: null, lower: null };
 
       // Log every 10 frames so we can see what's happening without flooding console
       if (idx % 10 === 0) {
@@ -676,43 +676,22 @@ function autoDetectRope(pixelData, W, H, prevUpper, prevLower) {
 }
 
 // Interpolate rope position between keyframes at time t
-export function interpolateRopes(ropeKeyframes, t) {
+export function interpolateRopes(ropeKeyframes, t, raceStartTime = null) {
   if (!ropeKeyframes?.length) return { upper: null, lower: null };
 
-  // Filter to only keyframes that actually have ropes drawn
-  const withUpper = ropeKeyframes.filter(k => k.upper);
-  const withLower = ropeKeyframes.filter(k => k.lower);
-
-  const interpSide = (drawn, t) => {
-    if (!drawn.length) return null;
-    // Before first keyframe -- use first
-    if (t <= drawn[0].time) return drawn[0];
-    // After last keyframe -- use last
-    if (t >= drawn[drawn.length - 1].time) return drawn[drawn.length - 1];
-    // Find surrounding keyframes
-    let before = drawn[0], after = drawn[drawn.length - 1];
-    for (let i = 0; i < drawn.length - 1; i++) {
-      if (drawn[i].time <= t && drawn[i + 1].time >= t) {
-        before = drawn[i]; after = drawn[i + 1]; break;
-      }
-    }
-    if (before === after) return before;
-    const alpha = (t - before.time) / (after.time - before.time);
-    const r1 = before.upper ?? before.lower;
-    const r2 = after.upper   ?? after.lower;
-    if (!r1 || !r2) return before;
-    return {
-      x1: 0, y1: r1.y1 + alpha * (r2.y1 - r1.y1),
-      x2: 1, y2: r1.y2 + alpha * (r2.y2 - r1.y2),
-    };
-  };
-
-  // Separate interpolation for upper and lower
   const upperDrawn = ropeKeyframes.filter(k => k.upper).map(k => ({ ...k, _r: k.upper }));
   const lowerDrawn = ropeKeyframes.filter(k => k.lower).map(k => ({ ...k, _r: k.lower }));
 
   const interp1 = (drawn, t) => {
     if (!drawn.length) return null;
+
+    // Before race start -- use the race-start keyframe's ropes exactly, no tween
+    // This prevents early dive frames getting wrongly interpolated rope positions
+    if (raceStartTime !== null && t < raceStartTime) {
+      const startKf = drawn.find(k => k.time >= raceStartTime) || drawn[0];
+      return startKf._r;
+    }
+
     if (t <= drawn[0].time) return drawn[0]._r;
     if (t >= drawn[drawn.length - 1].time) return drawn[drawn.length - 1]._r;
     for (let i = 0; i < drawn.length - 1; i++) {
