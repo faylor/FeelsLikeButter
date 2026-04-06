@@ -80,7 +80,7 @@ export function FrameReview({ frames, stroke, onConfirm, onBack }) {
           return (
             <div key={i} style={{ position: "relative" }}>
               <img
-                src={`data:image/jpeg;base64,${frame.data}`}
+                src={`data:image/jpeg;base64,${frame.preview || frame.data}`}
                 onClick={() => setEnlarged(i)}
                 style={{
                   width: "100%", aspectRatio: "16/9", objectFit: "contain",
@@ -111,7 +111,7 @@ export function FrameReview({ frames, stroke, onConfirm, onBack }) {
       {enlarged !== null && reviewed[enlarged]?.data && (
         <div onClick={() => setEnlarged(null)}
           style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.95)", zIndex: 200, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 12 }}>
-          <img src={`data:image/jpeg;base64,${reviewed[enlarged].data}`}
+          <img src={`data:image/jpeg;base64,${reviewed[enlarged].preview || reviewed[enlarged].data}`}
             style={{ maxWidth: "100%", maxHeight: "65vh", objectFit: "contain" }} />
           {reviewed[enlarged].angles?.length > 0 && (
             <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap", justifyContent: "center" }}>
