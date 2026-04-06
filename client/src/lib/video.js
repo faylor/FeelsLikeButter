@@ -62,101 +62,115 @@ function seekTo(video, t) {
   });
 }
 
-// --- Lane rope tracking -- HSV color category approach ----------------------
-// Lane ropes are always one of: RED, YELLOW, or DARK BLUE.
-// We classify on the seed frame then use the category for robust per-frame tracking.
-// Much more reliable than exact RGB matching -- robust to lighting changes.
+// --- Lane rope tracking -- HSV batch pixel approach -------------------------
+// Reads pixel strips with ONE getImageData call per column -- fast.
+// Rope categories: RED, YELLOW, BLUE (dark).
+// Pool water = aqua/cyan (H 170-200, low-mid S) -- clearly different from all rope types.
 
 function rgbToHsv(r, g, b) {
   r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  const d = max - min;
-  let h = 0, s = max === 0 ? 0 : d / max, v = max;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
   if (d > 0) {
-    if (max === r)      h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+    if      (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
     else if (max === g) h = ((b - r) / d + 2) / 6;
     else                h = ((r - g) / d + 4) / 6;
   }
-  return { h: h * 360, s, v };
+  return { h: h * 360, s: max === 0 ? 0 : d / max, v: max };
 }
 
-// Classify a pixel as rope-colored or not, per rope color category
-function isRopeColor(r, g, b, category) {
+function isRopePixel(r, g, b, category) {
   const { h, s, v } = rgbToHsv(r, g, b);
   switch (category) {
     case "red":
-      // Red wraps around 0/360 in HSV
-      return v > 0.25 && s > 0.35 && (h < 20 || h > 340);
+      // Bright saturated red -- nothing like pool water
+      return s > 0.45 && v > 0.25 && (h < 22 || h > 338);
     case "yellow":
-      return v > 0.35 && s > 0.40 && h > 35 && h < 75;
+      // Bright yellow/orange -- pool water never looks yellow
+      return s > 0.50 && v > 0.35 && h > 38 && h < 68;
     case "blue":
-      return v > 0.10 && s > 0.25 && h > 185 && h < 265;
+      // Dark/mid blue -- key: water is H 170-200 low-S, rope is H 210-255 high-S dark
+      return s > 0.45 && v < 0.58 && h > 210 && h < 255;
     default:
       return false;
   }
 }
 
-// Identify which rope color category is most present along a drawn line
-function identifyRopeCategory(ctx, rope, W, H) {
-  const counts = { red: 0, yellow: 0, blue: 0 };
-  const samples = 16;
-  // Sample a band of pixels around the line (not just on it)
-  for (let i = 0; i < samples; i++) {
-    const t = (i + 0.5) / samples;
-    const px = Math.round((rope.x1 + (rope.x2 - rope.x1) * t) * W);
-    const baseY = Math.round((rope.y1 + (rope.y2 - rope.y1) * t) * H);
-    for (let dy = -4; dy <= 4; dy++) {
-      const py = baseY + dy;
-      if (px < 0 || px >= W || py < 0 || py >= H) continue;
-      const d = ctx.getImageData(px, py, 1, 1).data;
-      for (const cat of ["red", "yellow", "blue"]) {
-        if (isRopeColor(d[0], d[1], d[2], cat)) counts[cat]++;
-      }
-    }
-  }
-  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-  console.log(`[rope] color votes:`, counts, `-> ${best[0]} (${best[1]} hits)`);
-  // Need at least some confident hits to classify
-  return best[1] >= 3 ? best[0] : null;
+// Read a rectangle of pixels in ONE getImageData call
+function readPixels(ctx, x, y, w, h) {
+  const cx = Math.max(0, x), cy = Math.max(0, y);
+  const cw = Math.min(w, ctx.canvas.width  - cx);
+  const ch = Math.min(h, ctx.canvas.height - cy);
+  if (cw <= 0 || ch <= 0) return null;
+  return { data: ctx.getImageData(cx, cy, cw, ch).data, w: cw, h: ch, x: cx, y: cy };
 }
 
-// Scan a full frame for a rope of known color category
-// Returns updated rope line or prevRope if not enough points found
+// Identify rope color from drawn region -- batch read
+function identifyRopeCategory(ctx, rope, W, H) {
+  const votes = { red: 0, yellow: 0, blue: 0 };
+  const pad   = 8; // scan 8px either side of the drawn line
+  const x0    = Math.round(Math.min(rope.x1, rope.x2) * W);
+  const x1    = Math.round(Math.max(rope.x1, rope.x2) * W);
+  const y0    = Math.round(Math.min(rope.y1, rope.y2) * H) - pad;
+  const stripW = Math.max(1, x1 - x0 + 1);
+  const stripH = Math.round(Math.abs(rope.y2 - rope.y1) * H) + pad * 2 + 1;
+
+  const px = readPixels(ctx, x0, y0, stripW, stripH);
+  if (!px) return null;
+
+  for (let i = 0; i < px.data.length; i += 4) {
+    const r = px.data[i], g = px.data[i+1], b = px.data[i+2];
+    for (const cat of ["red", "yellow", "blue"]) {
+      if (isRopePixel(r, g, b, cat)) votes[cat]++;
+    }
+  }
+
+  const best = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+  const total = (px.data.length / 4) || 1;
+  console.log(`[rope] votes:`, votes, `best=${best[0]} (${((best[1]/total)*100).toFixed(1)}%)`);
+  return best[1] > 4 ? best[0] : null;
+}
+
+// Track rope per frame using batch column reads
 function trackRopeByColor(ctx, category, prevRope, W, H) {
   if (!category) return prevRope;
 
-  const searchPx = Math.round(H * 0.14); // search 14% of height around expected Y
-  const xSteps   = 32;
+  const searchPx = Math.round(H * 0.13);
+  const xSteps   = 28;
+  const colW     = 3; // 3-pixel wide columns for noise robustness
   const detected = [];
 
   for (let xi = 0; xi < xSteps; xi++) {
-    const tx    = (xi + 0.5) / xSteps;
-    const px    = Math.round(tx * W);
-    const expY  = (prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx) * H;
+    const tx   = (xi + 0.5) / xSteps;
+    const px   = Math.round(tx * W) - 1;
+    const expY = (prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx) * H;
+    const y0   = Math.round(expY - searchPx);
 
-    // Scan vertically, collect all rope-colored pixels, pick median
+    const strip = readPixels(ctx, px, y0, colW, searchPx * 2 + 1);
+    if (!strip) continue;
+
     const hits = [];
-    for (let dy = -searchPx; dy <= searchPx; dy++) {
-      const py = Math.round(expY + dy);
-      if (py < 0 || py >= H || px < 0 || px >= W) continue;
-      const d = ctx.getImageData(px, py, 1, 1).data;
-      if (isRopeColor(d[0], d[1], d[2], category)) hits.push(py);
+    for (let row = 0; row < strip.h; row++) {
+      let rSum = 0, gSum = 0, bSum = 0;
+      for (let col = 0; col < strip.w; col++) {
+        const i = (row * strip.w + col) * 4;
+        rSum += strip.data[i]; gSum += strip.data[i+1]; bSum += strip.data[i+2];
+      }
+      const avg = strip.w || 1;
+      if (isRopePixel(rSum/avg, gSum/avg, bSum/avg, category)) {
+        hits.push(strip.y + row);
+      }
     }
 
     if (hits.length >= 2) {
-      // Use median of hits -- more robust than min/max
       hits.sort((a, b) => a - b);
-      const median = hits[Math.floor(hits.length / 2)] / H;
-      detected.push({ x: tx, y: median });
+      detected.push({ x: tx, y: hits[Math.floor(hits.length / 2)] / H });
     }
   }
 
-  console.log(`[rope:${category}] ${detected.length}/${xSteps} columns detected`);
+  console.log(`[rope:${category}] ${detected.length}/${xSteps} cols matched`);
+  if (detected.length < 7) return prevRope;
 
-  // Need at least 8 confident columns -- fewer means rope not visible
-  if (detected.length < 8) return prevRope;
-
-  // Least-squares line fit
   const n   = detected.length;
   const sx  = detected.reduce((s, p) => s + p.x, 0);
   const sy  = detected.reduce((s, p) => s + p.y, 0);
@@ -165,24 +179,16 @@ function trackRopeByColor(ctx, category, prevRope, W, H) {
   const den = n * sx2 - sx * sx;
   if (Math.abs(den) < 0.0001) return prevRope;
 
-  const slope     = (n * sxy - sx * sy) / den;
-  const intercept = (sy - slope * sx) / n;
+  const slope = (n * sxy - sx * sy) / den;
+  const icept = (sy - slope * sx) / n;
 
-  const fitted = {
-    x1: 0, y1: Math.max(0.01, Math.min(0.99, intercept)),
-    x2: 1, y2: Math.max(0.01, Math.min(0.99, intercept + slope)),
-  };
-
-  // Slow EMA -- gradual rotation with camera pan, not frame-to-frame jitter
   return {
-    x1: 0,
-    y1: ema(prevRope.y1, fitted.y1, 0.15),
-    x2: 1,
-    y2: ema(prevRope.y2, fitted.y2, 0.15),
+    x1: 0, y1: ema(prevRope.y1, Math.max(0.01, Math.min(0.99, icept)),        0.18),
+    x2: 1, y2: ema(prevRope.y2, Math.max(0.01, Math.min(0.99, icept+slope)), 0.18),
   };
 }
 
-// Ensure upper rope stays above lower rope -- prevent crossing
+// Prevent ropes crossing
 function preventRopeCrossing(upper, lower, minGap = 0.03) {
   if (!upper || !lower) return { upper, lower };
   const u = { ...upper }, l = { ...lower };
