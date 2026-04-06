@@ -62,86 +62,61 @@ function seekTo(video, t) {
   });
 }
 
-// --- Lane rope tracking -- template matching --------------------------------
-// Extracts small patches from the rope on frame 0.
-// Each subsequent frame: find where those patches appear using SAD matching.
-// No colour knowledge needed -- works regardless of rope colour.
+// --- Lane rope tracking -- horizontal edge detection ------------------------
+// Lane ropes create a strong horizontal edge against pool water.
+// Strategy: divide the frame into vertical strips, find the row with the
+// strongest cumulative vertical gradient in each strip, fit a line.
+// Completely colour-independent -- works for red, yellow, blue, any rope.
 
-const PATCH_W = 48, PATCH_H = 18, N_PATCHES = 6, SEARCH_PX = 28;
+// Find rope line in a frame by scanning for the strongest horizontal edge
+// prevRope: {x1,y1,x2,y2} normalised 0-1
+// Returns updated rope or prevRope if not enough strips found
+function detectRopeEdge(pixelData, W, H, prevRope) {
+  const STRIPS    = 12;   // horizontal strips to sample across frame width
+  const SEARCH_PX = Math.round(H * 0.11); // +-11% of frame height around expected Y
+  const MIN_GRADIENT = W / STRIPS * 6;    // min cumulative gradient to count a strip
 
-// Extract a greyscale patch (faster matching) centered at cx,cy from full-frame data
-function extractPatch(data, W, H, cx, cy) {
-  const patch = new Float32Array(PATCH_W * PATCH_H);
-  const ox = cx - Math.floor(PATCH_W / 2);
-  const oy = cy - Math.floor(PATCH_H / 2);
-  for (let row = 0; row < PATCH_H; row++) {
-    for (let col = 0; col < PATCH_W; col++) {
-      const sx = ox + col, sy = oy + row;
-      if (sx < 0 || sx >= W || sy < 0 || sy >= H) { patch[row * PATCH_W + col] = 128; continue; }
-      const i = (sy * W + sx) * 4;
-      // Luminance
-      patch[row * PATCH_W + col] = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
-    }
-  }
-  return patch;
-}
-
-// Find best vertical match for a patch at column cx, searching expY +- SEARCH_PX
-// Returns matched Y in pixels, or null
-function matchPatch(data, W, H, patch, cx, expY) {
-  let bestY = null, bestSAD = Infinity;
-  const ox = cx - Math.floor(PATCH_W / 2);
-
-  for (let dy = -SEARCH_PX; dy <= SEARCH_PX; dy++) {
-    const ty = expY + dy;
-    const oy = ty - Math.floor(PATCH_H / 2);
-    let sad = 0;
-    for (let row = 0; row < PATCH_H; row++) {
-      for (let col = 0; col < PATCH_W; col++) {
-        const sx = ox + col, sy = oy + row;
-        let pixel = 128;
-        if (sx >= 0 && sx < W && sy >= 0 && sy < H) {
-          const i = (sy * W + sx) * 4;
-          pixel = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
-        }
-        sad += Math.abs(pixel - patch[row * PATCH_W + col]);
-      }
-    }
-    if (sad < bestSAD) { bestSAD = sad; bestY = ty; }
-  }
-
-  // Reject if best match is too poor (all pixels wrong -- patch not found)
-  const threshold = PATCH_W * PATCH_H * 40; // avg 40/255 per pixel
-  return bestSAD < threshold ? bestY : null;
-}
-
-// Seed rope patches from first captured frame
-function seedRopePatches(data, W, H, rope) {
-  const patches = [];
-  for (let i = 0; i < N_PATCHES; i++) {
-    const tx = (i + 0.5) / N_PATCHES;
-    const cx = Math.round(tx * W);
-    const cy = Math.round((rope.y1 + (rope.y2 - rope.y1) * tx) * H);
-    patches.push({ tx, cx, cy, patch: extractPatch(data, W, H, cx, cy) });
-  }
-  console.log(`[rope] seeded ${patches.length} patches`);
-  return patches;
-}
-
-// Track rope using template matching
-function trackRopeByTemplate(data, W, H, patches, prevRope) {
   const detected = [];
 
-  for (const p of patches) {
-    const expY = Math.round((prevRope.y1 + (prevRope.y2 - prevRope.y1) * p.tx) * H);
-    const matchY = matchPatch(data, W, H, p.patch, p.cx, expY);
-    if (matchY !== null) detected.push({ x: p.tx, y: matchY / H });
+  for (let si = 0; si < STRIPS; si++) {
+    const x0 = Math.round((si / STRIPS) * W);
+    const x1 = Math.round(((si + 1) / STRIPS) * W);
+    const sw  = Math.max(1, x1 - x0);
+    const tx  = (si + 0.5) / STRIPS;
+
+    // Expected Y for this strip based on previous rope line
+    const expY = Math.round((prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx) * H);
+    const y0   = Math.max(1, expY - SEARCH_PX);
+    const y1   = Math.min(H - 2, expY + SEARCH_PX);
+
+    let bestRow = -1, bestScore = -1;
+
+    for (let row = y0; row <= y1; row++) {
+      // Cumulative vertical gradient across the strip width
+      let score = 0;
+      for (let col = x0; col < x1; col++) {
+        const i1 = (row       * W + col) * 4;
+        const i2 = ((row + 1) * W + col) * 4;
+        // Luminance difference between this row and next
+        const l1 = pixelData[i1]   * 0.299 + pixelData[i1+1] * 0.587 + pixelData[i1+2] * 0.114;
+        const l2 = pixelData[i2]   * 0.299 + pixelData[i2+1] * 0.587 + pixelData[i2+2] * 0.114;
+        score += Math.abs(l2 - l1);
+      }
+      if (score > bestScore) { bestScore = score; bestRow = row; }
+    }
+
+    // Only accept strips where the gradient is strong enough
+    if (bestRow >= 0 && bestScore >= MIN_GRADIENT) {
+      detected.push({ x: tx, y: bestRow / H, score: bestScore });
+    }
   }
 
-  console.log(`[rope] ${detected.length}/${N_PATCHES} patches matched`);
-  if (detected.length < 3) return prevRope; // not enough -- hold position
+  // Need at least half the strips to agree
+  if (detected.length < Math.floor(STRIPS * 0.5)) {
+    return prevRope; // not enough signal -- hold last known position
+  }
 
-  // Least-squares line fit through matched positions
+  // Least-squares line fit through detected strip positions
   const n   = detected.length;
   const sx  = detected.reduce((s, p) => s + p.x, 0);
   const sy  = detected.reduce((s, p) => s + p.y, 0);
@@ -153,15 +128,17 @@ function trackRopeByTemplate(data, W, H, patches, prevRope) {
   const slope = (n * sxy - sx * sy) / den;
   const icept = (sy - slope * sx) / n;
 
-  // Slow EMA -- gradual rotation, not per-frame jitter
+  // Clamp to reasonable values and apply slow EMA for smooth rotation
+  const newY1 = Math.max(0.02, Math.min(0.98, icept));
+  const newY2 = Math.max(0.02, Math.min(0.98, icept + slope));
   return {
-    x1: 0, y1: ema(prevRope.y1, Math.max(0.01, Math.min(0.99, icept)),        0.2),
-    x2: 1, y2: ema(prevRope.y2, Math.max(0.01, Math.min(0.99, icept+slope)), 0.2),
+    x1: 0, y1: ema(prevRope.y1, newY1, 0.25),
+    x2: 1, y2: ema(prevRope.y2, newY2, 0.25),
   };
 }
 
-// Prevent ropes crossing
-function preventRopeCrossing(upper, lower, minGap = 0.03) {
+// Prevent ropes crossing each other
+function preventRopeCrossing(upper, lower, minGap = 0.025) {
   if (!upper || !lower) return { upper, lower };
   const u = { ...upper }, l = { ...lower };
   if (u.y1 > l.y1 - minGap) { const m = (u.y1+l.y1)/2; u.y1 = m-minGap/2; l.y1 = m+minGap/2; }
@@ -237,13 +214,11 @@ export async function extractTrackedFrames(
   let lastGoodCrop = null;
   let lostCount = 0;
 
-  // Lane rope tracking state
-  let activeRopes  = laneRopes ? {
+  // Lane rope tracking -- edge detection needs no seeding, starts from frame 1
+  let activeRopes = laneRopes ? {
     upper: laneRopes.upper ? { ...laneRopes.upper } : null,
     lower: laneRopes.lower ? { ...laneRopes.lower } : null,
   } : null;
-  let ropePatches  = { upper: null, lower: null }; // template patches seeded on frame 0
-  let ropesSeeded  = false;
 
   // IoU helper -- prevents tracker jumping to wrong person
   function iou(a, b) {
@@ -283,26 +258,15 @@ export async function extractTrackedFrames(
           (z.w / z.cw) * OUT_W, (z.h / z.ch) * OUT_H, 14)
       );
 
-      // 3. Dynamic lane rope tracking via template matching
+      // 3. Lane rope tracking -- horizontal edge detection
       if (activeRopes) {
-        // One full-frame pixel read -- used for all rope operations this frame
+        // Single full-frame read for all rope operations
         const frameData = capCtx.getImageData(0, 0, OUT_W, OUT_H).data;
-
-        if (!ropesSeeded) {
-          // Extract patches from rope positions on first frame
-          if (activeRopes.upper) ropePatches.upper = seedRopePatches(frameData, OUT_W, OUT_H, activeRopes.upper);
-          if (activeRopes.lower) ropePatches.lower = seedRopePatches(frameData, OUT_W, OUT_H, activeRopes.lower);
-          ropesSeeded = true;
-        } else {
-          // Match patches to find new rope positions
-          if (activeRopes.upper && ropePatches.upper)
-            activeRopes.upper = trackRopeByTemplate(frameData, OUT_W, OUT_H, ropePatches.upper, activeRopes.upper);
-          if (activeRopes.lower && ropePatches.lower)
-            activeRopes.lower = trackRopeByTemplate(frameData, OUT_W, OUT_H, ropePatches.lower, activeRopes.lower);
-          const safe = preventRopeCrossing(activeRopes.upper, activeRopes.lower);
-          activeRopes.upper = safe.upper;
-          activeRopes.lower = safe.lower;
-        }
+        if (activeRopes.upper) activeRopes.upper = detectRopeEdge(frameData, OUT_W, OUT_H, activeRopes.upper);
+        if (activeRopes.lower) activeRopes.lower = detectRopeEdge(frameData, OUT_W, OUT_H, activeRopes.lower);
+        const safe = preventRopeCrossing(activeRopes.upper, activeRopes.lower);
+        activeRopes.upper = safe.upper;
+        activeRopes.lower = safe.lower;
       }
 
       // 4. Pose detection on FULL FRAME -- then crop around result
