@@ -236,7 +236,7 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
   }
   if (step === "processing") return <ProcessingScreen progress={processProgress} />;
   if (step === "review") {
-    return <FrameReview frames={processedFrames} stroke={stroke} onConfirm={onReviewConfirm} onBack={onReviewBack} />;
+    return <FrameReview frames={processedFrames} stroke={stroke} onConfirm={onReviewConfirm} onBack={onReviewBack} processing={processProgress} />;
   }
   if (step === "analyzing") return <AnalyzingScreen frameCount={approvedFrames?.length} />;
 
