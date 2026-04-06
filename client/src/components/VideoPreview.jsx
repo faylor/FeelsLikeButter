@@ -120,7 +120,7 @@ function LaneRopeStep({ frame, onConfirm, onBack }) {
   const bothDrawn   = lines.upper && lines.lower;
   const eitherDrawn = lines.upper || lines.lower;
 
-  const handleConfirm = () => onConfirm({ laneRopes: lines });
+  const handleConfirm = () => onConfirm({ laneRopes: lines, seedTime: frame?.time ?? 0.1 });
 
   return (
     <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 160 }}>
@@ -202,14 +202,15 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
 
   const handleSwimmerConfirm = () => setPage("ropes");
 
-  const handleRopesConfirm = ({ laneRopes }) => {
+  const handleRopesConfirm = ({ laneRopes, seedTime }) => {
     const frame = selected ? frames[selected.frameIdx] : null;
     const pose  = frame?.poses.find(p => p.idx === selected?.poseIdx);
     onConfirm({
       landmarks: pose?.landmarks || null,
       bb:        pose?.bb || null,
       time:      frame?.time,
-      laneRopes, // { upper: {x1,y1,x2,y2}, lower: {x1,y1,x2,y2} } in 0-1 normalised
+      laneRopes,
+      ropeSeedTime: seedTime, // timestamp of the frame the ropes were drawn on
     });
   };
 
@@ -225,10 +226,11 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
     );
   }
 
-  // Page 2: lane rope drawing
+  // Page 2: lane rope drawing -- always use frames[0] (earliest frame)
+  // so drawing coords match the first processing frame as closely as possible
   if (page === "ropes") {
-    const bestFrame = frames.find(f => f.poses.length > 0) || frames[0];
-    return <LaneRopeStep frame={bestFrame} onConfirm={handleRopesConfirm} onBack={() => setPage("swimmer")} />;
+    const drawFrame = frames[0] || frames.find(f => f.poses.length > 0);
+    return <LaneRopeStep frame={drawFrame} onConfirm={handleRopesConfirm} onBack={() => setPage("swimmer")} />;
   }
 
   // Page 1: swimmer confirmation
