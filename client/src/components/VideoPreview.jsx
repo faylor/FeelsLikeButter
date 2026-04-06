@@ -220,7 +220,7 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
         <div style={{ width: 32, height: 1, background: T.dark, margin: "0 auto 32px" }} />
         <Label style={{ display: "block", color: T.black, marginBottom: 16 }}>Detecting Swimmers</Label>
         <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.8 }}>
-          Running pose detection on first 5 seconds...
+          Running pose detection from 10 seconds in -- swimmer should be above water and in their lane.
         </p>
       </div>
     );
@@ -249,8 +249,8 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
         <Rule />
         <p style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.muted, lineHeight: 1.6, margin: "14px 0 0" }}>
           {totalPoses === 0
-            ? "No people detected in the first 5 seconds. Proceed anyway -- tracking will use your initial selection box."
-            : "Tap the bounding box around your swimmer. This anchors the tracker to the right person."}
+            ? "No people detected. Swimmer may still be underwater -- tap Retry in a few seconds, or proceed anyway."
+            : "Frames are from 10s onwards -- swimmer should be above water. Tap their bounding box to confirm."}
         </p>
       </div>
 
