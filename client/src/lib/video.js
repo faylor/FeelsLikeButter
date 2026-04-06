@@ -71,137 +71,6 @@ function seekTo(video, t) {
 //   OLD: frame 0 template vs frame N  -- template goes stale over long video
 //   NEW: frame N-1 template vs frame N -- always fresh, follows actual motion
 
-const AF_W = 64, AF_H = 16; // wide patch captures multiple rope float cycles
-const AF_SY = 28;            // vertical search +-28px
-const AF_SX = 12;            // horizontal search +-12px (rope texture shifts with pan)
-const AF_N  = 9;             // anchor points per rope
-
-// Build initial anchor points along a rope line
-function initAnchors(frameData, W, H, rope) {
-  const anchors = [];
-  for (let i = 0; i < AF_N; i++) {
-    const tx = (i + 0.5) / AF_N;
-    const cx = Math.round(tx * W);
-    const cy = Math.round((rope.y1 + (rope.y2 - rope.y1) * tx) * H);
-    anchors.push({ tx, cx, cy });
-  }
-  return anchors;
-}
-
-// Extract greyscale luminance patch centered at (cx,cy)
-function getLuminancePatch(data, W, H, cx, cy) {
-  const hw = AF_W >> 1, hh = AF_H >> 1;
-  const patch = new Float32Array(AF_W * AF_H);
-  for (let row = 0; row < AF_H; row++) {
-    for (let col = 0; col < AF_W; col++) {
-      const x = cx - hw + col, y = cy - hh + row;
-      patch[row * AF_W + col] = (x >= 0 && x < W && y >= 0 && y < H)
-        ? data[(y * W + x) * 4] * 0.299 + data[(y * W + x) * 4 + 1] * 0.587 + data[(y * W + x) * 4 + 2] * 0.114
-        : 128;
-    }
-  }
-  return patch;
-}
-
-// Track anchors from prevData to currData -- 2D search (horizontal + vertical)
-function trackAnchors(prevData, currData, W, H, anchors) {
-  const rawDys = [];
-  const updated = anchors.map(a => {
-    const prevPatch = getLuminancePatch(prevData, W, H, a.cx, a.cy);
-    let bestDy = 0, bestDx = 0, bestSAD = Infinity;
-    const hw = AF_W >> 1, hh = AF_H >> 1;
-
-    for (let dy = -AF_SY; dy <= AF_SY; dy++) {
-      for (let dx = -AF_SX; dx <= AF_SX; dx++) {
-        const newCy = a.cy + dy, newCx = a.cx + dx;
-        if (newCy < hh || newCy >= H - hh || newCx < hw || newCx >= W - hw) continue;
-        let sad = 0;
-        for (let row = 0; row < AF_H; row++) {
-          for (let col = 0; col < AF_W; col++) {
-            const x = newCx - hw + col, y = newCy - hh + row;
-            const lum = (x >= 0 && x < W && y >= 0 && y < H)
-              ? currData[(y * W + x) * 4] * 0.299 + currData[(y * W + x) * 4 + 1] * 0.587 + currData[(y * W + x) * 4 + 2] * 0.114
-              : 128;
-            sad += Math.abs(lum - prevPatch[row * AF_W + col]);
-          }
-        }
-        if (sad < bestSAD) { bestSAD = sad; bestDy = dy; bestDx = dx; }
-      }
-    }
-
-    const maxSAD = AF_W * AF_H * 32;
-    const matched = bestSAD < maxSAD;
-    if (matched) rawDys.push(bestDy);
-    return { tx: a.tx, cx: a.cx + (matched ? bestDx : 0), cy: a.cy + (matched ? bestDy : 0) };
-  });
-
-  // Outlier rejection -- if an anchor moved very differently from the median, clamp it
-  if (rawDys.length >= 4) {
-    rawDys.sort((a, b) => a - b);
-    const medDy = rawDys[Math.floor(rawDys.length / 2)];
-    return updated.map((a, i) => {
-      const dy = a.cy - anchors[i].cy;
-      // If this anchor moved more than 12px away from median, clamp it
-      if (Math.abs(dy - medDy) > 12) {
-        return { ...a, cy: anchors[i].cy + medDy };
-      }
-      return a;
-    });
-  }
-  return updated;
-}
-
-// Fit a rope line through current anchor positions
-function anchorsToRope(anchors, H, prevRope) {
-  const n   = anchors.length;
-  const sx  = anchors.reduce((s, a) => s + a.tx,       0);
-  const sy  = anchors.reduce((s, a) => s + a.cy / H,   0);
-  const sxy = anchors.reduce((s, a) => s + a.tx * a.cy / H, 0);
-  const sx2 = anchors.reduce((s, a) => s + a.tx * a.tx, 0);
-  const den = n * sx2 - sx * sx;
-  if (Math.abs(den) < 0.0001) return prevRope;
-  const slope = (n * sxy - sx * sy) / den;
-  const icept = (sy - slope * sx) / n;
-  return {
-    x1: 0, y1: Math.max(0.02, Math.min(0.98, icept)),
-    x2: 1, y2: Math.max(0.02, Math.min(0.98, icept + slope)),
-  };
-}
-
-// Drift correction -- every RESEED_INTERVAL frames, snap anchors back to the
-// strongest horizontal edge within a band around the predicted position.
-const RESEED_INTERVAL  = 6;  // correct every 6 frames (1.5s at 4fps)
-const RESEED_HARD_INT  = 20; // hard full-width rescan every 20 frames
-
-function reseedAnchors(frameData, W, H, anchors, hard = false) {
-  const SCAN_PX = hard ? 20 : 12;
-  return anchors.map(a => {
-    const y0 = Math.max(1, a.cy - SCAN_PX);
-    const y1 = Math.min(H - 2, a.cy + SCAN_PX);
-    const x0 = Math.max(0, a.cx - 24);
-    const x1 = Math.min(W - 1, a.cx + 24);
-    const stripW = x1 - x0 + 1;
-
-    let bestRow = a.cy, bestGrad = -1;
-    for (let row = y0; row <= y1; row++) {
-      let grad = 0;
-      for (let col = x0; col <= x1; col++) {
-        const i1 = (row       * W + col) * 4;
-        const i2 = ((row + 1) * W + col) * 4;
-        const l1 = frameData[i1]*0.299 + frameData[i1+1]*0.587 + frameData[i1+2]*0.114;
-        const l2 = frameData[i2]*0.299 + frameData[i2+1]*0.587 + frameData[i2+2]*0.114;
-        grad += Math.abs(l2 - l1);
-      }
-      if (grad > bestGrad) { bestGrad = grad; bestRow = row; }
-    }
-
-    // Snap only if edge is meaningfully strong -- rope creates sharp boundary
-    const minGrad = stripW * (hard ? 6 : 10);
-    return { ...a, cy: bestGrad > minGrad ? bestRow : a.cy };
-  });
-}
-
-
 // Prevent ropes crossing
 function preventRopeCrossing(upper, lower, minGap = 0.025) {
   if (!upper || !lower) return { upper, lower };
@@ -214,7 +83,7 @@ function preventRopeCrossing(upper, lower, minGap = 0.025) {
 // Uses 640x360 capture -- high enough for analysis, safe on mobile memory
 export async function extractTrackedFrames(
   videoFile, initialCrop, redactZones, intervalSecs = 0.5, stroke, onProgress,
-  seedLandmarks = null, seedBb = null, laneRopes = null, ropeSeedTime = null
+  seedLandmarks = null, seedBb = null, ropeKeyframes = null
 ) {
   const OUT_W = 640, OUT_H = 360;
 
@@ -268,16 +137,6 @@ export async function extractTrackedFrames(
   if (times[times.length - 1] < lastT) times.push(lastT);
 
   console.log(`[video] ${times.length} frames over ${duration.toFixed(1)}s`);
-
-  // If rope seed time is known, insert it at the front of the list
-  // This ensures anchor seeding happens on the exact frame the user drew on
-  if (ropeSeedTime !== null && laneRopes) {
-    const st = parseFloat(Math.max(0.1, Math.min(duration - 0.1, ropeSeedTime)).toFixed(2));
-    if (!times.includes(st)) times.unshift(st);
-    else times.sort((a, b) => a === st ? -1 : b === st ? 1 : a - b); // move to front
-    console.log(`[video] rope seed frame inserted at t=${st}s`);
-  }
-
   if (onProgress) onProgress(0, times.length, `Extracting ${times.length} frames...`);
 
   // Tracking state -- initialise from confirmed seed if available
@@ -293,13 +152,8 @@ export async function extractTrackedFrames(
   let prevTime = null;          // timestamp of last good detection
 
   // Lane rope tracking via optical flow -- anchor points tracked frame-to-frame
-  let activeRopes  = laneRopes ? {
-    upper: laneRopes.upper ? { ...laneRopes.upper } : null,
-    lower: laneRopes.lower ? { ...laneRopes.lower } : null,
-  } : null;
-  let ropeAnchors  = { upper: null, lower: null };
-  let prevFrameData = null;
-  let framesSinceReseed = 0;
+  // Rope positions interpolated from user-confirmed keyframes -- no tracking drift
+  // activeRopes updated per-frame via interpolation
 
   // IoU helper -- prevents tracker jumping to wrong person
   function iou(a, b) {
@@ -340,67 +194,46 @@ export async function extractTrackedFrames(
       );
 
       // 3. Lane rope tracking -- optical flow frame-to-frame
-      if (activeRopes) {
-        const currData = capCtx.getImageData(0, 0, OUT_W, OUT_H).data;
-        const isSeedFrame = ropeSeedTime !== null &&
-          Math.abs(t - parseFloat(Math.max(0.1, Math.min(duration - 0.1, ropeSeedTime)).toFixed(2))) < 0.05;
+      // 3. Interpolate rope positions from keyframes -- exact at keyframes, smooth between
+      const activeRopes = ropeKeyframes ? interpolateRopes(ropeKeyframes, t) : { upper: null, lower: null };
 
-        if (!prevFrameData || isSeedFrame) {
-          // Seed anchors from this frame -- rope coords match exactly
-          if (activeRopes.upper) ropeAnchors.upper = initAnchors(currData, OUT_W, OUT_H, activeRopes.upper);
-          if (activeRopes.lower) ropeAnchors.lower = initAnchors(currData, OUT_W, OUT_H, activeRopes.lower);
-          if (isSeedFrame) console.log(`[rope] anchors seeded on drawing frame t=${t}s`);
-        } else {
-          // Track anchors from previous frame to current frame
-          if (ropeAnchors.upper) {
-            ropeAnchors.upper = trackAnchors(prevFrameData, currData, OUT_W, OUT_H, ropeAnchors.upper);
-            activeRopes.upper = anchorsToRope(ropeAnchors.upper, OUT_H, activeRopes.upper);
-          }
-          if (ropeAnchors.lower) {
-            ropeAnchors.lower = trackAnchors(prevFrameData, currData, OUT_W, OUT_H, ropeAnchors.lower);
-            activeRopes.lower = anchorsToRope(ropeAnchors.lower, OUT_H, activeRopes.lower);
-          }
-
-          // Periodic drift correction
-          framesSinceReseed++;
-          const hardReseed = framesSinceReseed >= RESEED_HARD_INT;
-          if (framesSinceReseed >= RESEED_INTERVAL) {
-            if (ropeAnchors.upper) ropeAnchors.upper = reseedAnchors(currData, OUT_W, OUT_H, ropeAnchors.upper, hardReseed);
-            if (ropeAnchors.lower) ropeAnchors.lower = reseedAnchors(currData, OUT_W, OUT_H, ropeAnchors.lower, hardReseed);
-            if (hardReseed) framesSinceReseed = 0;
-            else framesSinceReseed = RESEED_INTERVAL; // stay at soft interval until hard
-          }
-
-          const safe = preventRopeCrossing(activeRopes.upper, activeRopes.lower);
-          activeRopes.upper = safe.upper;
-          activeRopes.lower = safe.lower;
+      // Mask outside lane on the capture canvas -- eliminates crowd/spectators from pose detection
+      if (activeRopes.upper || activeRopes.lower) {
+        const mCtx = capCtx;
+        mCtx.fillStyle = "rgba(0,0,0,0.92)";
+        // Mask above upper rope
+        if (activeRopes.upper) {
+          const uy1 = activeRopes.upper.y1 * OUT_H, uy2 = activeRopes.upper.y2 * OUT_H;
+          mCtx.beginPath();
+          mCtx.moveTo(0, 0); mCtx.lineTo(OUT_W, 0);
+          mCtx.lineTo(OUT_W, uy2); mCtx.lineTo(0, uy1);
+          mCtx.closePath(); mCtx.fill();
         }
-        prevFrameData = currData;
-
-        // Skip emitting the seed frame itself -- it's only for calibration
-        if (isSeedFrame) {
-          if (onProgress) onProgress(idx + 1, times.length, `Seeding rope anchors...`, null);
-          continue;
+        // Mask below lower rope
+        if (activeRopes.lower) {
+          const ly1 = activeRopes.lower.y1 * OUT_H, ly2 = activeRopes.lower.y2 * OUT_H;
+          mCtx.beginPath();
+          mCtx.moveTo(0, ly1); mCtx.lineTo(OUT_W, ly2);
+          mCtx.lineTo(OUT_W, OUT_H); mCtx.lineTo(0, OUT_H);
+          mCtx.closePath(); mCtx.fill();
         }
       }
 
-      // 4. Pose detection -- constrained to lane rope bounds + velocity filter
+      // 4. Pose detection -- constrained to lane bounds + velocity filter
       let tracked   = false;
       let cropBox   = null;
       let landmarks = null;
       let poseBb    = null;
 
-      // Determine if we're in dive phase (first 5s -- swimmer entering water)
-      // During dive, allow detection anywhere vertically but constrain horizontally
-      // to seed position 30% to avoid detecting adjacent divers
       const isDivePhase = t < 5.0;
 
-      // Lane rope Y bounds in normalised 0-1 coords (relaxed during dive)
+      // After masking, pose detection should only find the swimmer
+      // Keep loose bounds as a backup filter
       const laneMinY = (!isDivePhase && activeRopes?.upper)
-        ? Math.min(activeRopes.upper.y1, activeRopes.upper.y2) - 0.05
+        ? Math.min(activeRopes.upper.y1, activeRopes.upper.y2) - 0.04
         : 0;
       const laneMaxY = (!isDivePhase && activeRopes?.lower)
-        ? Math.max(activeRopes.lower.y1, activeRopes.lower.y2) + 0.05
+        ? Math.max(activeRopes.lower.y1, activeRopes.lower.y2) + 0.04
         : 1;
 
       // During dive, constrain X to seed area to avoid adjacent divers
@@ -683,6 +516,147 @@ export async function extractTrackedFrames(
   const tracked = frames.filter(f => f.tracked).length;
   console.log(`[video] done: ${frames.length} frames, ${tracked} tracked`);
   return frames;
+}
+
+// --- Extract keyframes every N seconds for rope drawing ---------------------
+// Auto-detects rope position on each frame using edge detection as suggestion.
+// User can then adjust in the UI. Returns [{time, data, upper, lower}]
+export async function extractRopeKeyframes(videoFile, intervalSecs = 5.0, seedPos, onStatus) {
+  if (onStatus) onStatus("Loading video...");
+  const OUT_W = 640, OUT_H = 360;
+
+  const objUrl = URL.createObjectURL(videoFile);
+  const video  = document.createElement("video");
+  video.src = objUrl; video.muted = true; video.playsInline = true; video.preload = "auto";
+
+  const duration = await new Promise((res, rej) => {
+    let done = false;
+    const finish = d => { if (!done) { done = true; res(d || 0); } };
+    video.onloadedmetadata = () => finish(video.duration);
+    video.onerror = () => { URL.revokeObjectURL(objUrl); rej(new Error("Video failed to load")); };
+    video.load();
+    setTimeout(() => finish(video.duration || 0), 10000);
+  });
+
+  if (!duration || duration < 1) throw new Error("Video too short");
+
+  // Build keyframe timestamps -- start from 0.5s
+  const times = [];
+  for (let t = 0.5; t < duration - 0.2; t += intervalSecs) {
+    times.push(parseFloat(t.toFixed(2)));
+  }
+  if (times[times.length-1] < duration - 1.0)
+    times.push(parseFloat((duration - 0.5).toFixed(2)));
+
+  if (onStatus) onStatus(`Detecting ropes on ${times.length} keyframes...`);
+
+  const keyframes = [];
+  // Seed rope positions -- start with a reasonable guess from the seed position
+  const seedCy  = seedPos?.cy ?? 0.5;
+  let prevUpper = { x1: 0, y1: seedCy - 0.15, x2: 1, y2: seedCy - 0.15 };
+  let prevLower = { x1: 0, y1: seedCy + 0.15, x2: 1, y2: seedCy + 0.15 };
+
+  for (let i = 0; i < times.length; i++) {
+    const t = times[i];
+    if (onStatus) onStatus(`Keyframe ${i+1} / ${times.length} at ${t.toFixed(1)}s`);
+
+    await new Promise(res => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; res(); } };
+      video.onseeked = finish; video.currentTime = t;
+      setTimeout(finish, 2500);
+    });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = OUT_W; canvas.height = OUT_H;
+    canvas.getContext("2d").drawImage(video, 0, 0, OUT_W, OUT_H);
+    const ctx = canvas.getContext("2d");
+    const pixelData = ctx.getImageData(0, 0, OUT_W, OUT_H).data;
+
+    // Auto-detect rope positions using edge detection around expected position
+    const detected = autoDetectRope(pixelData, OUT_W, OUT_H, prevUpper, prevLower);
+    if (detected.upper) prevUpper = detected.upper;
+    if (detected.lower) prevLower = detected.lower;
+
+    keyframes.push({
+      time:  t,
+      data:  canvas.toDataURL("image/jpeg", 0.82).split(",")[1],
+      upper: detected.upper || prevUpper,
+      lower: detected.lower || prevLower,
+    });
+  }
+
+  URL.revokeObjectURL(objUrl);
+  return keyframes;
+}
+
+// Auto-detect upper and lower rope positions using edge scan
+function autoDetectRope(pixelData, W, H, prevUpper, prevLower) {
+  const STRIPS  = 16, SCAN = Math.round(H * 0.12);
+
+  const findStrongEdgeRow = (prevRope) => {
+    const detected = [];
+    for (let si = 0; si < STRIPS; si++) {
+      const tx   = (si + 0.5) / STRIPS;
+      const x0   = Math.round((si / STRIPS) * W);
+      const x1   = Math.round(((si+1) / STRIPS) * W);
+      const expY = Math.round((prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx) * H);
+      const y0   = Math.max(1, expY - SCAN), y1 = Math.min(H-2, expY + SCAN);
+      let bestRow = -1, bestGrad = 0;
+      for (let row = y0; row <= y1; row++) {
+        let grad = 0;
+        for (let col = x0; col < x1; col++) {
+          const i1 = (row*W+col)*4, i2 = ((row+1)*W+col)*4;
+          grad += Math.abs((pixelData[i1]*0.299+pixelData[i1+1]*0.587+pixelData[i1+2]*0.114)
+                         - (pixelData[i2]*0.299+pixelData[i2+1]*0.587+pixelData[i2+2]*0.114));
+        }
+        if (grad > bestGrad) { bestGrad = grad; bestRow = row; }
+      }
+      const minGrad = (x1-x0) * 8;
+      if (bestRow >= 0 && bestGrad > minGrad) detected.push({ x: tx, y: bestRow / H });
+    }
+    if (detected.length < Math.floor(STRIPS * 0.5)) return null;
+    const n=detected.length, sx=detected.reduce((s,p)=>s+p.x,0), sy=detected.reduce((s,p)=>s+p.y,0);
+    const sxy=detected.reduce((s,p)=>s+p.x*p.y,0), sx2=detected.reduce((s,p)=>s+p.x*p.x,0);
+    const den=n*sx2-sx*sx;
+    if (Math.abs(den) < 0.0001) return null;
+    const slope=(n*sxy-sx*sy)/den, icept=(sy-slope*sx)/n;
+    return { x1:0, y1:Math.max(0.02,Math.min(0.98,icept)), x2:1, y2:Math.max(0.02,Math.min(0.98,icept+slope)) };
+  };
+
+  return {
+    upper: findStrongEdgeRow(prevUpper),
+    lower: findStrongEdgeRow(prevLower),
+  };
+}
+
+// Interpolate rope position between keyframes at time t
+export function interpolateRopes(ropeKeyframes, t) {
+  if (!ropeKeyframes?.length) return { upper: null, lower: null };
+
+  // Find surrounding keyframes
+  let before = null, after = null;
+  for (const kf of ropeKeyframes) {
+    if (kf.time <= t) before = kf;
+    if (kf.time >= t && !after) after = kf;
+  }
+
+  if (!before && !after) return { upper: null, lower: null };
+  if (!before) return { upper: after.upper, lower: after.lower };
+  if (!after)  return { upper: before.upper, lower: before.lower };
+  if (before === after) return { upper: before.upper, lower: before.lower };
+
+  // Linear interpolation
+  const alpha = (t - before.time) / (after.time - before.time);
+  const lerp  = (a, b) => a === null || b === null ? (a || b) : a + alpha * (b - a);
+  const lerpRope = (r1, r2) => r1 && r2 ? {
+    x1: 0, y1: lerp(r1.y1, r2.y1), x2: 1, y2: lerp(r1.y2, r2.y2),
+  } : (r1 || r2);
+
+  return {
+    upper: lerpRope(before.upper, after.upper),
+    lower: lerpRope(before.lower, after.lower),
+  };
 }
 
 // --- Smart lap-aware timestamps (for timing analysis) ------------------------
