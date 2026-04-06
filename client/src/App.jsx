@@ -85,7 +85,7 @@ export default function App() {
     try {
       await extractTrackedFrames(
         videoFile, crop, privacyZones,
-        0.5, stroke,
+        0.25, stroke,  // 4 frames/sec -- smaller motion per step, better flow tracking
         // Progress callback -- also delivers each frame as it completes
         (done, total, phase, newFrame) => {
           setProcessProgress({ done, total, phase });
