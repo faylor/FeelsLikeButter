@@ -180,6 +180,32 @@ export function HistoryView({ sessions }) {
 
                   <Rule style={{ marginBottom: 16 }} />
 
+                  {/* Frames strip */}
+                  {s.frames?.length > 0 && (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 10, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
+                        {s.frames.length} frames analysed
+                      </div>
+                      <div style={{ display: "flex", gap: 4, overflowX: "auto", scrollbarWidth: "none", paddingBottom: 4 }}>
+                        {s.frames.map((f, i) => (
+                          <div key={i} style={{ position: "relative", flexShrink: 0 }}>
+                            <img
+                              src={`data:image/jpeg;base64,${f.preview}`}
+                              style={{ height: 52, width: "auto", objectFit: "cover", display: "block", border: `1px solid ${f.tracked ? "#007A5E" : T.rule}` }}
+                              alt={`Frame ${i + 1}`}
+                            />
+                            {f.angles?.length > 0 && (
+                              <div style={{ position: "absolute", bottom: 2, right: 2, width: 6, height: 6, borderRadius: "50%", background: "#E63946" }} />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 10, color: T.muted, marginTop: 4 }}>
+                        Green border = swimmer tracked. Red dot = kinematics detected.
+                      </div>
+                    </div>
+                  )}
+
                   {/* Technique items */}
                   {s.items?.length > 0 ? s.items.map((item, idx) => (
                     <div key={idx} style={{ marginBottom: 16, paddingBottom: 16, borderBottom: idx < s.items.length - 1 ? `1px solid ${T.rule}` : "none" }}>
