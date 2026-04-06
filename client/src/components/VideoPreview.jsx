@@ -151,8 +151,9 @@ function RopeKeyframesStep({ videoFile, initialSeed, onConfirm, onBack }) {
   const [keyframes, setKeyframes]   = useState([]);
   const [loading, setLoading]       = useState(true);
   const [loadMsg, setLoadMsg]       = useState("Extracting keyframes...");
-  const [editing, setEditing]       = useState(null); // index being edited
+  const [editing, setEditing]       = useState(null);
   const [error, setError]           = useState(null);
+  const [raceStartIdx, setRaceStartIdx] = useState(null); // index of race-start keyframe
 
   useEffect(() => {
     if (!videoFile) return;
@@ -180,7 +181,7 @@ function RopeKeyframesStep({ videoFile, initialSeed, onConfirm, onBack }) {
   );
 
   return (
-    <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 160, overscrollBehavior: "none", touchAction: "none" }}>
+    <div style={{ background: T.white, minHeight: "100vh", paddingBottom: 160, overscrollBehavior: "none" }}>
       <div style={{ padding: "24px 24px 16px" }}>
         <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 12px", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 12, color: T.mid, letterSpacing: "0.06em", textTransform: "uppercase" }}>
           &larr; Back
@@ -209,18 +210,25 @@ function RopeKeyframesStep({ videoFile, initialSeed, onConfirm, onBack }) {
       <div style={{ padding: "0 12px", display: "flex", flexDirection: "column", gap: 12 }}>
         {keyframes.map((kf, i) => {
           const ok = bothDrawn(kf);
+          const isRaceStart = raceStartIdx === i;
           return (
-            <div key={i} style={{ border: `2px solid ${ok ? "#007A5E" : T.rule}`, position: "relative" }}>
-              {/* Thumbnail with rope overlaid */}
+            <div key={i} style={{ border: `2px solid ${isRaceStart ? "#E63946" : ok ? "#007A5E" : T.rule}`, position: "relative" }}>
               <KeyframeThumbnail kf={kf} />
-              {/* Overlay */}
-              <div style={{ position: "absolute", top: 0, left: 0, right: 0, display: "flex", justifyContent: "space-between", padding: "4px 8px", background: "rgba(0,0,0,0.5)" }}>
+              {/* Header bar */}
+              <div style={{ position: "absolute", top: 0, left: 0, right: 0, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 8px", background: "rgba(0,0,0,0.55)" }}>
                 <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 10, color: "#fff" }}>
                   {kf.time.toFixed(1)}s
                 </span>
-                <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 10, color: ok ? "#00E676" : "#FFD600" }}>
-                  {ok ? "Ropes set" : kf.upper || kf.lower ? "Partial" : "Not drawn yet"}
-                </span>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {/* Race start toggle */}
+                  <button onClick={() => setRaceStartIdx(i === raceStartIdx ? null : i)}
+                    style={{ background: isRaceStart ? "#E63946" : "rgba(255,255,255,0.15)", border: "none", color: "#fff", padding: "2px 8px", fontSize: 10, cursor: "pointer", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", borderRadius: 2 }}>
+                    {isRaceStart ? "Race start" : "Mark start"}
+                  </button>
+                  <span style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 10, color: ok ? "#00E676" : "#FFD600" }}>
+                    {ok ? "Ropes set" : kf.upper || kf.lower ? "Partial" : "Not drawn"}
+                  </span>
+                </div>
               </div>
               <button onClick={() => setEditing(i)}
                 style={{ position: "absolute", bottom: 6, right: 6, background: T.dark, border: "none", color: "#fff", padding: "5px 12px", fontSize: 11, cursor: "pointer", fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif" }}>
@@ -242,12 +250,14 @@ function RopeKeyframesStep({ videoFile, initialSeed, onConfirm, onBack }) {
 
       {/* Action bar */}
       <div style={{ position: "fixed", bottom: 72, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: T.white, borderTop: `1px solid ${T.rule}`, padding: "14px 16px" }}>
-        <Btn onClick={() => onConfirm(keyframes)}
+        <Btn onClick={() => onConfirm(keyframes, raceStartIdx !== null ? keyframes[raceStartIdx].time : null)}
           style={{ opacity: readyCount > 0 ? 1 : 0.4, pointerEvents: readyCount > 0 ? "auto" : "none" }}>
-          {readyCount > 0 ? `Confirm ${keyframes.length} keyframes -- Start Processing` : "Draw ropes on at least one frame first"}
+          {readyCount > 0 ? `Confirm ${keyframes.length} keyframes -- Next` : "Draw ropes on at least one frame first"}
         </Btn>
         <div style={{ fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif", fontSize: 11, color: T.muted, textAlign: "center", marginTop: 6 }}>
-          Ropes will be interpolated between keyframes
+          {raceStartIdx !== null
+            ? `Tweening from ${keyframes[raceStartIdx].time.toFixed(1)}s (race start). Frames before this use fixed ropes.`
+            : "Tap \"Mark start\" on the frame where the race begins for accurate early-race ropes."}
         </div>
       </div>
     </div>
@@ -286,6 +296,7 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
   const [selected, setSelected] = useState(null);
   const [enlarged, setEnlarged] = useState(null);
   const [ropeKeyframes, setRopeKeyframes] = useState([]);
+  const [raceStartTime, setRaceStartTime] = useState(null);
   const [page, setPage]         = useState("ropes");
 
   useEffect(() => {
@@ -316,9 +327,9 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
       <RopeKeyframesStep
         videoFile={videoFile}
         initialSeed={initialSeed}
-        onConfirm={(ropeKeyframes) => {
-          // Store ropes and move to swimmer selection step
+        onConfirm={(ropeKeyframes, raceStartTime) => {
           setRopeKeyframes(ropeKeyframes);
+          setRaceStartTime(raceStartTime);
           setPage("swimmer");
         }}
         onBack={onBack}
@@ -461,6 +472,7 @@ export function VideoPreview({ videoFile, crop, onConfirm, onBack }) {
             bb:            pose?.bb || null,
             time:          frame?.time,
             ropeKeyframes,
+            raceStartTime,
           });
         }}>
           {selected ? "Confirmed -- Start Processing" : "Skip -- Start Processing"}
