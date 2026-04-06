@@ -75,7 +75,7 @@ export default function App() {
   };
 
   // -- Preview confirmed: start processing, stream frames to review ----------
-  const handlePreviewConfirm = async ({ landmarks, bb, time, ropeKeyframes }) => {
+  const handlePreviewConfirm = async ({ landmarks, bb, time, ropeKeyframes, raceStartTime }) => {
     setPreviewTimes(ropeKeyframes?.map(k => k.time) || []);
     setProcessedFrames([]);  // clear previous
     setProcessProgress(null);
@@ -93,7 +93,7 @@ export default function App() {
             setProcessedFrames(prev => [...prev, newFrame]);
           }
         },
-        landmarks, bb, ropeKeyframes
+        landmarks, bb, ropeKeyframes, raceStartTime
       );
       setProcessProgress(null); // done
     } catch (e) {
