@@ -169,17 +169,17 @@ function anchorsToRope(anchors, H, prevRope) {
 }
 
 // Drift correction -- every RESEED_INTERVAL frames, snap anchors back to the
-// strongest horizontal edge within a narrow band around the predicted position.
-// This corrects accumulated optical-flow drift without losing smooth tracking.
-const RESEED_INTERVAL = 8;
+// strongest horizontal edge within a band around the predicted position.
+const RESEED_INTERVAL  = 6;  // correct every 6 frames (1.5s at 4fps)
+const RESEED_HARD_INT  = 20; // hard full-width rescan every 20 frames
 
-function reseedAnchors(frameData, W, H, anchors) {
-  const SCAN_PX = 10; // tight scan -- only correct small drift
+function reseedAnchors(frameData, W, H, anchors, hard = false) {
+  const SCAN_PX = hard ? 20 : 12;
   return anchors.map(a => {
     const y0 = Math.max(1, a.cy - SCAN_PX);
     const y1 = Math.min(H - 2, a.cy + SCAN_PX);
-    const x0 = Math.max(0, a.cx - 16);
-    const x1 = Math.min(W - 1, a.cx + 16);
+    const x0 = Math.max(0, a.cx - 24);
+    const x1 = Math.min(W - 1, a.cx + 24);
     const stripW = x1 - x0 + 1;
 
     let bestRow = a.cy, bestGrad = -1;
@@ -195,8 +195,8 @@ function reseedAnchors(frameData, W, H, anchors) {
       if (grad > bestGrad) { bestGrad = grad; bestRow = row; }
     }
 
-    // Only snap if the edge is strong enough to be a rope, not just noise
-    const minGrad = stripW * 8;
+    // Snap only if edge is meaningfully strong -- rope creates sharp boundary
+    const minGrad = stripW * (hard ? 6 : 10);
     return { ...a, cy: bestGrad > minGrad ? bestRow : a.cy };
   });
 }
@@ -361,12 +361,14 @@ export async function extractTrackedFrames(
             activeRopes.lower = anchorsToRope(ropeAnchors.lower, OUT_H, activeRopes.lower);
           }
 
-          // Periodic drift correction -- snap anchors to nearest strong edge
+          // Periodic drift correction
           framesSinceReseed++;
+          const hardReseed = framesSinceReseed >= RESEED_HARD_INT;
           if (framesSinceReseed >= RESEED_INTERVAL) {
-            if (ropeAnchors.upper) ropeAnchors.upper = reseedAnchors(currData, OUT_W, OUT_H, ropeAnchors.upper);
-            if (ropeAnchors.lower) ropeAnchors.lower = reseedAnchors(currData, OUT_W, OUT_H, ropeAnchors.lower);
-            framesSinceReseed = 0;
+            if (ropeAnchors.upper) ropeAnchors.upper = reseedAnchors(currData, OUT_W, OUT_H, ropeAnchors.upper, hardReseed);
+            if (ropeAnchors.lower) ropeAnchors.lower = reseedAnchors(currData, OUT_W, OUT_H, ropeAnchors.lower, hardReseed);
+            if (hardReseed) framesSinceReseed = 0;
+            else framesSinceReseed = RESEED_INTERVAL; // stay at soft interval until hard
           }
 
           const safe = preventRopeCrossing(activeRopes.upper, activeRopes.lower);
@@ -388,16 +390,22 @@ export async function extractTrackedFrames(
       let landmarks = null;
       let poseBb    = null;
 
-      // Determine if we're in dive phase (first 2.5s -- swimmer may be above/outside lane)
-      const isDivePhase = t < 2.5;
+      // Determine if we're in dive phase (first 5s -- swimmer entering water)
+      // During dive, allow detection anywhere vertically but constrain horizontally
+      // to seed position 30% to avoid detecting adjacent divers
+      const isDivePhase = t < 5.0;
 
-      // Lane rope Y bounds in normalised 0-1 coords
+      // Lane rope Y bounds in normalised 0-1 coords (relaxed during dive)
       const laneMinY = (!isDivePhase && activeRopes?.upper)
         ? Math.min(activeRopes.upper.y1, activeRopes.upper.y2) - 0.05
         : 0;
       const laneMaxY = (!isDivePhase && activeRopes?.lower)
         ? Math.max(activeRopes.lower.y1, activeRopes.lower.y2) + 0.05
         : 1;
+
+      // During dive, constrain X to seed area to avoid adjacent divers
+      const diveMinX = isDivePhase ? Math.max(0, targetCx - 0.30) : 0;
+      const diveMaxX = isDivePhase ? Math.min(1, targetCx + 0.30) : 1;
 
       if (poseReady && poseModule) {
         try {
@@ -416,8 +424,12 @@ export async function extractTrackedFrames(
               const bb = poseModule.getPoseBoundingBox(lms);
               if (!bb || bb.confidence < 0.25) return;
 
-              // Lane constraint -- skip poses outside lane ropes (unless dive phase)
+              // Lane constraint -- skip poses outside lane ropes (post-dive)
               if (!isDivePhase && (bb.cy < laneMinY || bb.cy > laneMaxY)) return;
+
+              // Dive phase X constraint -- only accept poses near seed position
+              // prevents adjacent divers (jumping in to same or adjacent lane) being picked
+              if (isDivePhase && (bb.cx < diveMinX || bb.cx > diveMaxX)) return;
 
               // Velocity filter -- skip physically impossible jumps
               const dist = Math.hypot(bb.cx - smoothCx, bb.cy - smoothCy);
@@ -757,9 +769,13 @@ export async function extractPreviewFrames(videoFile) {
 
   if (!dur || dur < 0.3) { URL.revokeObjectURL(objUrl); throw new Error("Video too short"); }
 
-  const span  = Math.min(5.0, dur - 0.1);
-  const times = [0, 0.25, 0.5, 0.75, 1.0]
-    .map(p => parseFloat(Math.max(0.1, p * span).toFixed(2)));
+  // Start at 10s -- swimmer is above water and settled into their lane.
+  // If video is shorter than 12s, fall back to 25-75% of duration.
+  const startT = dur > 12 ? 10.0 : dur * 0.25;
+  const endT   = Math.min(startT + 10.0, dur - 0.5);
+  const span   = endT - startT;
+  const times  = [0, 0.25, 0.5, 0.75, 1.0]
+    .map(p => parseFloat((startT + p * span).toFixed(2)));
 
   const results = [];
 
