@@ -63,82 +63,112 @@ function seekTo(video, t) {
 }
 
 // --- Lane rope tracking via color sampling -----------------------------------
-// Samples the rope color from initial drawn position, then tracks it frame by frame
+// Tracks rope lines frame-by-frame using the initial drawn position as seed.
+// Uses slow EMA so lines rotate gradually with camera pan rather than jumping.
 
-function sampleRopeColor(ctx, rope, canvasW, canvasH, samples = 8) {
-  // Sample colors along the drawn line
+function sampleRopeColor(ctx, rope, W, H, samples = 10) {
   const colors = [];
   for (let i = 0; i < samples; i++) {
     const t = (i + 0.5) / samples;
-    const x = Math.round((rope.x1 + (rope.x2 - rope.x1) * t) * canvasW);
-    const y = Math.round((rope.y1 + (rope.y2 - rope.y1) * t) * canvasH);
-    if (x < 0 || x >= canvasW || y < 0 || y >= canvasH) continue;
+    const x = Math.round((rope.x1 + (rope.x2 - rope.x1) * t) * W);
+    const y = Math.round((rope.y1 + (rope.y2 - rope.y1) * t) * H);
+    if (x < 0 || x >= W || y < 0 || y >= H) continue;
     const d = ctx.getImageData(x, y, 1, 1).data;
     colors.push([d[0], d[1], d[2]]);
   }
   if (!colors.length) return null;
-  // Average color
-  return colors.reduce((acc, c) => [acc[0]+c[0], acc[1]+c[1], acc[2]+c[2]], [0,0,0])
-    .map(v => v / colors.length);
+  return colors.reduce((a, c) => [a[0]+c[0], a[1]+c[1], a[2]+c[2]], [0,0,0])
+    .map(v => Math.round(v / colors.length));
 }
 
 function colorDistance(a, b) {
-  return Math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2);
+  // Weighted Euclidean -- green channel less important in pool water
+  return Math.sqrt(
+    1.2*(a[0]-b[0])**2 +
+    0.8*(a[1]-b[1])**2 +
+    1.0*(a[2]-b[2])**2
+  );
 }
 
-function trackRopeInFrame(ctx, ropeColor, prevRope, canvasW, canvasH) {
-  // Scan along expected line position, searching 15% vertically for rope color
-  const searchBand = 0.15;
-  const xSamples   = 20; // sample points along x axis
-  const ySamples   = 20; // vertical scan range per point
+function trackRopeInFrame(ctx, ropeColor, prevRope, W, H) {
+  if (!ropeColor) return prevRope;
 
-  const detectedPoints = [];
+  // How far (in pixels) to search vertically around expected line
+  const searchPx  = Math.round(H * 0.12); // 12% of frame height
+  const xSteps    = 24;
+  const maxDist   = 45; // reject pixels further than this from rope color
 
-  for (let xi = 0; xi < xSamples; xi++) {
-    const tx = (xi + 0.5) / xSamples;
-    // Expected Y at this X based on previous rope position
-    const expectedY = prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx;
-    const x = Math.round(tx * canvasW);
+  const detected = [];
 
-    let bestY = null, bestDist = 60; // max color distance to count as rope
-    for (let yi = -ySamples; yi <= ySamples; yi++) {
-      const y = Math.round((expectedY + (yi / ySamples) * searchBand) * canvasH);
-      if (y < 0 || y >= canvasH || x < 0 || x >= canvasW) continue;
-      const d = ctx.getImageData(x, y, 1, 1).data;
+  for (let xi = 0; xi < xSteps; xi++) {
+    const tx = (xi + 0.5) / xSteps;
+    const px = Math.round(tx * W);
+
+    // Expected Y in pixels from previous rope
+    const expectedY = (prevRope.y1 + (prevRope.y2 - prevRope.y1) * tx) * H;
+
+    let bestY = null, bestDist = maxDist;
+    for (let dy = -searchPx; dy <= searchPx; dy++) {
+      const py = Math.round(expectedY + dy);
+      if (py < 0 || py >= H || px < 0 || px >= W) continue;
+      const d = ctx.getImageData(px, py, 1, 1).data;
       const dist = colorDistance(ropeColor, [d[0], d[1], d[2]]);
-      if (dist < bestDist) { bestDist = dist; bestY = y / canvasH; }
+      if (dist < bestDist) { bestDist = dist; bestY = py / H; }
     }
-    if (bestY !== null) detectedPoints.push({ x: tx, y: bestY });
+    // Only accept if we found a good color match
+    if (bestY !== null) detected.push({ x: tx, y: bestY });
   }
 
-  if (detectedPoints.length < 4) return prevRope; // not enough points -- keep previous
+  // Need enough confident points to fit a line
+  if (detected.length < 6) {
+    console.log(`[rope] only ${detected.length} points -- keeping previous`);
+    return prevRope;
+  }
 
-  // Fit line through detected points (least squares)
-  const n = detectedPoints.length;
-  const sumX = detectedPoints.reduce((s, p) => s + p.x, 0);
-  const sumY = detectedPoints.reduce((s, p) => s + p.y, 0);
-  const sumXY = detectedPoints.reduce((s, p) => s + p.x * p.y, 0);
-  const sumX2 = detectedPoints.reduce((s, p) => s + p.x * p.x, 0);
-  const denom = n * sumX2 - sumX * sumX;
-
+  // Least-squares line fit through detected points
+  const n = detected.length;
+  const sx = detected.reduce((s, p) => s + p.x, 0);
+  const sy = detected.reduce((s, p) => s + p.y, 0);
+  const sxy = detected.reduce((s, p) => s + p.x * p.y, 0);
+  const sx2 = detected.reduce((s, p) => s + p.x * p.x, 0);
+  const denom = n * sx2 - sx * sx;
   if (Math.abs(denom) < 0.0001) return prevRope;
 
-  const slope     = (n * sumXY - sumX * sumY) / denom;
-  const intercept = (sumY - slope * sumX) / n;
+  const slope = (n * sxy - sx * sy) / denom;
+  const intercept = (sy - slope * sx) / n;
 
-  // New rope as line from x=0 to x=1
-  const newRope = {
-    x1: 0,     y1: Math.max(0, Math.min(1, intercept)),
-    x2: 1,     y2: Math.max(0, Math.min(1, intercept + slope)),
+  const fitted = {
+    x1: 0, y1: Math.max(0.01, Math.min(0.99, intercept)),
+    x2: 1, y2: Math.max(0.01, Math.min(0.99, intercept + slope)),
   };
 
-  // EMA with previous position -- smooth out noise
+  // Slow EMA -- alpha 0.12 means ropes rotate ~1/8th toward new position per frame
+  // This gives smooth gradual rotation following camera pan, not jitter
   return {
     x1: 0,
-    y1: ema(prevRope.y1, newRope.y1, 0.45),
+    y1: ema(prevRope.y1, fitted.y1, 0.12),
     x2: 1,
-    y2: ema(prevRope.y2, newRope.y2, 0.45),
+    y2: ema(prevRope.y2, fitted.y2, 0.12),
   };
+}
+
+// Ensure upper rope stays above lower rope at both ends -- prevent crossing
+function preventRopeCrossing(upper, lower, minGap = 0.03) {
+  if (!upper || !lower) return { upper, lower };
+  const u = { ...upper }, l = { ...lower };
+  // At x=0
+  if (u.y1 > l.y1 - minGap) {
+    const mid = (u.y1 + l.y1) / 2;
+    u.y1 = mid - minGap / 2;
+    l.y1 = mid + minGap / 2;
+  }
+  // At x=1
+  if (u.y2 > l.y2 - minGap) {
+    const mid = (u.y2 + l.y2) / 2;
+    u.y2 = mid - minGap / 2;
+    l.y2 = mid + minGap / 2;
+  }
+  return { upper: u, lower: l };
 }
 
 
@@ -263,13 +293,14 @@ export async function extractTrackedFrames(
           ropesSeeded = true;
           console.log("[video] rope colors sampled:", ropeColors.upper, ropeColors.lower);
         } else {
-          // Track ropes using color matching
-          if (activeRopes.upper && ropeColors.upper) {
+          // Track ropes and prevent crossing
+          if (activeRopes.upper && ropeColors.upper)
             activeRopes.upper = trackRopeInFrame(capCtxRO, ropeColors.upper, activeRopes.upper, OUT_W, OUT_H);
-          }
-          if (activeRopes.lower && ropeColors.lower) {
+          if (activeRopes.lower && ropeColors.lower)
             activeRopes.lower = trackRopeInFrame(capCtxRO, ropeColors.lower, activeRopes.lower, OUT_W, OUT_H);
-          }
+          const safe = preventRopeCrossing(activeRopes.upper, activeRopes.lower);
+          activeRopes.upper = safe.upper;
+          activeRopes.lower = safe.lower;
         }
       }
 
@@ -278,6 +309,7 @@ export async function extractTrackedFrames(
       let tracked   = false;
       let cropBox   = null;
       let landmarks = null;
+      let poseBb    = null;  // tight detected bounding box for preview overlay
 
       if (poseReady && poseModule) {
         try {
@@ -316,6 +348,7 @@ export async function extractTrackedFrames(
             lostCount = 0;
             landmarks = chosenMatch.landmarks;
             tracked = true;
+            poseBb = bb;  // store for preview overlay
 
             smoothCx = ema(smoothCx, bb.cx, 0.45);
             smoothCy = ema(smoothCy, bb.cy, 0.45);
@@ -399,19 +432,62 @@ export async function extractTrackedFrames(
         }
       }
 
-      // 5. Full-frame preview canvas (for review screen -- shows full context)
+      // 5. Full-frame preview canvas (for review screen)
       const preview = document.createElement("canvas");
       preview.width = OUT_W; preview.height = OUT_H;
       const pCtx = preview.getContext("2d");
       pCtx.drawImage(cap, 0, 0, OUT_W, OUT_H);
 
-      // Draw tracking box on preview so user can see what was tracked
-      if (cropBox && cropBox.w > 10) {
-        pCtx.strokeStyle = tracked ? "#007A5E" : "#C4610A";
+      // Draw tight pose bounding box -- solid bright line shows detected person
+      if (poseBb) {
+        const bx = poseBb.x * OUT_W, by = poseBb.y * OUT_H;
+        const bw = poseBb.w * OUT_W, bh = poseBb.h * OUT_H;
+        // Filled semi-transparent background
+        pCtx.fillStyle = "rgba(0,200,120,0.12)";
+        pCtx.fillRect(bx, by, bw, bh);
+        // Solid border
+        pCtx.strokeStyle = "#00E676";
+        pCtx.lineWidth = 2.5;
+        pCtx.setLineDash([]);
+        pCtx.strokeRect(bx, by, bw, bh);
+        // Corner accents
+        const cs = Math.min(bw, bh) * 0.18;
+        pCtx.strokeStyle = "#FFFFFF";
         pCtx.lineWidth = 2;
-        pCtx.setLineDash([6, 3]);
+        [[bx, by], [bx+bw, by], [bx, by+bh], [bx+bw, by+bh]].forEach(([cx, cy]) => {
+          const sx = cx === bx ? 1 : -1, sy = cy === by ? 1 : -1;
+          pCtx.beginPath();
+          pCtx.moveTo(cx + sx * cs, cy);
+          pCtx.lineTo(cx, cy);
+          pCtx.lineTo(cx, cy + sy * cs);
+          pCtx.stroke();
+        });
+        // Confidence label
+        pCtx.fillStyle = "#00E676";
+        pCtx.fillRect(bx, by - 18, 72, 18);
+        pCtx.fillStyle = "#000";
+        pCtx.font = "bold 10px sans-serif";
+        pCtx.fillText(`tracked ${Math.round(poseBb.confidence * 100)}%`, bx + 4, by - 5);
+      }
+
+      // Draw padded crop box -- dashed, shows what goes to Claude
+      if (cropBox && cropBox.w > 10 && poseBb) {
+        pCtx.strokeStyle = "rgba(255,255,255,0.5)";
+        pCtx.lineWidth = 1;
+        pCtx.setLineDash([5, 4]);
         pCtx.strokeRect(cropBox.x, cropBox.y, cropBox.w, cropBox.h);
         pCtx.setLineDash([]);
+      }
+
+      // Untracked indicator
+      if (!tracked) {
+        pCtx.fillStyle = "rgba(196,97,10,0.7)";
+        pCtx.fillRect(0, 0, OUT_W, 22);
+        pCtx.fillStyle = "#fff";
+        pCtx.font = "10px sans-serif";
+        pCtx.textAlign = "center";
+        pCtx.fillText("No person detected -- frame will not track correctly", OUT_W/2, 14);
+        pCtx.textAlign = "left";
       }
 
       // Draw lane ropes on preview
