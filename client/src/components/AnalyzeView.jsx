@@ -278,7 +278,7 @@ export function AnalyzeView({ stroke, setStroke, videoFile, setVideoFile, step, 
               <div style={{ display: "flex", gap: 4, overflowX: "auto", padding: "0 24px 4px", scrollbarWidth: "none" }}>
                 {approvedFrames.map((f, i) => (
                   <img key={i}
-                    src={`data:image/jpeg;base64,${f.data}`}
+                    src={`data:image/jpeg;base64,${f.preview || f.data}`}
                     style={{ height: 56, width: "auto", flexShrink: 0, border: `1px solid ${f.tracked ? "#007A5E" : T.rule}`, objectFit: "cover" }}
                     alt={`Frame ${i + 1}`}
                   />
