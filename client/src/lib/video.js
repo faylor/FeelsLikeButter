@@ -149,17 +149,18 @@ export async function extractTrackedFrames(
 ) {
   const OUT_W = 640, OUT_H = 360;
 
-  // Start pose loading in background -- don't block frame extraction
+  // Load pose detector -- await it so it's ready before frame 1
   let poseReady = false;
   let poseModule = null;
-  import("./pose.js")
-    .then(async pm => {
-      poseModule = pm;
-      await pm.initPoseDetector();
-      poseReady = true;
-      console.log("[video] pose ready");
-    })
-    .catch(e => console.warn("[video] pose unavailable:", e.message));
+  try {
+    if (onProgress) onProgress(0, 1, "Loading pose detector...");
+    poseModule = await import("./pose.js");
+    await poseModule.initPoseDetector();
+    poseReady = true;
+    console.log("[video] pose detector ready");
+  } catch (e) {
+    console.warn("[video] pose unavailable -- continuing without kinematics:", e.message);
+  }
 
   if (onProgress) onProgress(0, 1, "Loading video...");
 
@@ -488,7 +489,8 @@ export async function extractTrackedFrames(
       frames.push({ data: null, frameIndex: idx, timestamp: t, tracked: false, angles: [], approved: false });
     }
 
-    if (onProgress) onProgress(idx + 1, times.length, `Frame ${idx + 1} / ${times.length}`);
+    // Deliver completed frame to caller so review screen can stream it in
+    if (onProgress) onProgress(idx + 1, times.length, `Frame ${idx + 1} / ${times.length}`, frames[frames.length - 1]);
   }
 
   URL.revokeObjectURL(objUrl);
