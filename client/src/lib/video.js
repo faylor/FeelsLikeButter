@@ -168,6 +168,40 @@ function anchorsToRope(anchors, H, prevRope) {
   };
 }
 
+// Drift correction -- every RESEED_INTERVAL frames, snap anchors back to the
+// strongest horizontal edge within a narrow band around the predicted position.
+// This corrects accumulated optical-flow drift without losing smooth tracking.
+const RESEED_INTERVAL = 8;
+
+function reseedAnchors(frameData, W, H, anchors) {
+  const SCAN_PX = 10; // tight scan -- only correct small drift
+  return anchors.map(a => {
+    const y0 = Math.max(1, a.cy - SCAN_PX);
+    const y1 = Math.min(H - 2, a.cy + SCAN_PX);
+    const x0 = Math.max(0, a.cx - 16);
+    const x1 = Math.min(W - 1, a.cx + 16);
+    const stripW = x1 - x0 + 1;
+
+    let bestRow = a.cy, bestGrad = -1;
+    for (let row = y0; row <= y1; row++) {
+      let grad = 0;
+      for (let col = x0; col <= x1; col++) {
+        const i1 = (row       * W + col) * 4;
+        const i2 = ((row + 1) * W + col) * 4;
+        const l1 = frameData[i1]*0.299 + frameData[i1+1]*0.587 + frameData[i1+2]*0.114;
+        const l2 = frameData[i2]*0.299 + frameData[i2+1]*0.587 + frameData[i2+2]*0.114;
+        grad += Math.abs(l2 - l1);
+      }
+      if (grad > bestGrad) { bestGrad = grad; bestRow = row; }
+    }
+
+    // Only snap if the edge is strong enough to be a rope, not just noise
+    const minGrad = stripW * 8;
+    return { ...a, cy: bestGrad > minGrad ? bestRow : a.cy };
+  });
+}
+
+
 // Prevent ropes crossing
 function preventRopeCrossing(upper, lower, minGap = 0.025) {
   if (!upper || !lower) return { upper, lower };
@@ -254,6 +288,9 @@ export async function extractTrackedFrames(
   let smoothCx = targetCx, smoothCy = targetCy;
   let lastGoodCrop = null;
   let lostCount = 0;
+  // Velocity tracking -- reject physically impossible jumps
+  let velCx = 0, velCy = 0;   // estimated velocity in normalised coords per second
+  let prevTime = null;          // timestamp of last good detection
 
   // Lane rope tracking via optical flow -- anchor points tracked frame-to-frame
   let activeRopes  = laneRopes ? {
@@ -261,7 +298,8 @@ export async function extractTrackedFrames(
     lower: laneRopes.lower ? { ...laneRopes.lower } : null,
   } : null;
   let ropeAnchors  = { upper: null, lower: null };
-  let prevFrameData = null; // pixel data from previous frame for flow tracking
+  let prevFrameData = null;
+  let framesSinceReseed = 0;
 
   // IoU helper -- prevents tracker jumping to wrong person
   function iou(a, b) {
@@ -322,6 +360,15 @@ export async function extractTrackedFrames(
             ropeAnchors.lower = trackAnchors(prevFrameData, currData, OUT_W, OUT_H, ropeAnchors.lower);
             activeRopes.lower = anchorsToRope(ropeAnchors.lower, OUT_H, activeRopes.lower);
           }
+
+          // Periodic drift correction -- snap anchors to nearest strong edge
+          framesSinceReseed++;
+          if (framesSinceReseed >= RESEED_INTERVAL) {
+            if (ropeAnchors.upper) ropeAnchors.upper = reseedAnchors(currData, OUT_W, OUT_H, ropeAnchors.upper);
+            if (ropeAnchors.lower) ropeAnchors.lower = reseedAnchors(currData, OUT_W, OUT_H, ropeAnchors.lower);
+            framesSinceReseed = 0;
+          }
+
           const safe = preventRopeCrossing(activeRopes.upper, activeRopes.lower);
           activeRopes.upper = safe.upper;
           activeRopes.lower = safe.lower;
@@ -335,51 +382,71 @@ export async function extractTrackedFrames(
         }
       }
 
-      // 4. Pose detection on FULL FRAME -- then crop around result
-      // Never crop before detecting -- swimmer may be outside initial box
+      // 4. Pose detection -- constrained to lane rope bounds + velocity filter
       let tracked   = false;
       let cropBox   = null;
       let landmarks = null;
-      let poseBb    = null;  // tight detected bounding box for preview overlay
+      let poseBb    = null;
+
+      // Determine if we're in dive phase (first 2.5s -- swimmer may be above/outside lane)
+      const isDivePhase = t < 2.5;
+
+      // Lane rope Y bounds in normalised 0-1 coords
+      const laneMinY = (!isDivePhase && activeRopes?.upper)
+        ? Math.min(activeRopes.upper.y1, activeRopes.upper.y2) - 0.05
+        : 0;
+      const laneMaxY = (!isDivePhase && activeRopes?.lower)
+        ? Math.max(activeRopes.lower.y1, activeRopes.lower.y2) + 0.05
+        : 1;
 
       if (poseReady && poseModule) {
         try {
           const poses = await poseModule.detectPoses(cap);
 
-          // Use IoU matching when we have a previous position (prevents drift)
-          // Fall back to centre-distance for first frame
           let chosenMatch = null;
           if (poses.length > 0) {
-            const prevBb = { cx: smoothCx, cy: smoothCy, w: targetW, h: targetH };
-            let bestScore = -1;
+            const prevBb   = { cx: smoothCx, cy: smoothCy, w: targetW, h: targetH };
+            const dt       = prevTime !== null ? Math.max(0.05, t - prevTime) : 0.5;
+            // Max plausible displacement per second (swimmer + camera pan)
+            const maxSpeed = 0.55; // normalised units/sec -- ~35% frame width per second
+            const maxDist  = maxSpeed * dt;
+            let bestScore  = -1;
 
             poses.forEach(lms => {
               const bb = poseModule.getPoseBoundingBox(lms);
               if (!bb || bb.confidence < 0.25) return;
-              // Score = IoU with previous box (weighted) + proximity + confidence
+
+              // Lane constraint -- skip poses outside lane ropes (unless dive phase)
+              if (!isDivePhase && (bb.cy < laneMinY || bb.cy > laneMaxY)) return;
+
+              // Velocity filter -- skip physically impossible jumps
+              const dist = Math.hypot(bb.cx - smoothCx, bb.cy - smoothCy);
+              if (lostCount === 0 && dist > maxDist) {
+                console.log(`[track] rejected: dist=${dist.toFixed(2)} > max=${maxDist.toFixed(2)}`);
+                return;
+              }
+
               const overlap = iou(prevBb, bb);
-              const dist    = Math.hypot(bb.cx - smoothCx, bb.cy - smoothCy);
               const score   = overlap * 0.6 + (1 - Math.min(dist, 1)) * 0.2 + bb.confidence * 0.2;
               if (score > bestScore) { bestScore = score; chosenMatch = { landmarks: lms, bb }; }
             });
-
-            // Reject match if it jumps too far with low overlap (wrong person)
-            if (chosenMatch) {
-              const jumpDist = Math.hypot(chosenMatch.bb.cx - smoothCx, chosenMatch.bb.cy - smoothCy);
-              const overlap  = iou(prevBb, chosenMatch.bb);
-              if (jumpDist > 0.35 && overlap < 0.05 && lostCount === 0) {
-                console.log(`[video] frame ${idx}: rejected jump dist=${jumpDist.toFixed(2)} iou=${overlap.toFixed(2)}`);
-                chosenMatch = null;
-              }
-            }
           }
 
           if (chosenMatch && chosenMatch.bb.confidence > 0.25) {
             const bb = chosenMatch.bb;
+
+            // Update velocity estimate
+            if (prevTime !== null) {
+              const dt = Math.max(0.05, t - prevTime);
+              velCx = ema(velCx, (bb.cx - smoothCx) / dt, 0.3);
+              velCy = ema(velCy, (bb.cy - smoothCy) / dt, 0.3);
+            }
+            prevTime = t;
+
             lostCount = 0;
             landmarks = chosenMatch.landmarks;
             tracked = true;
-            poseBb = bb;  // store for preview overlay
+            poseBb = bb;
 
             smoothCx = ema(smoothCx, bb.cx, 0.45);
             smoothCy = ema(smoothCy, bb.cy, 0.45);
