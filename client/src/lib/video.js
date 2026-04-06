@@ -193,29 +193,30 @@ export async function extractTrackedFrames(
           (z.w / z.cw) * OUT_W, (z.h / z.ch) * OUT_H, 14)
       );
 
-      // 3. Lane rope tracking -- optical flow frame-to-frame
-      // 3. Interpolate rope positions from keyframes -- exact at keyframes, smooth between
+      // 3. Interpolate rope positions from user keyframes
       const activeRopes = ropeKeyframes ? interpolateRopes(ropeKeyframes, t) : { upper: null, lower: null };
 
-      // Mask outside lane on the capture canvas -- eliminates crowd/spectators from pose detection
+      // 4a. Capture CLEAN frame for preview BEFORE masking
+      const cleanCap = document.createElement("canvas");
+      cleanCap.width = OUT_W; cleanCap.height = OUT_H;
+      cleanCap.getContext("2d").drawImage(cap, 0, 0, OUT_W, OUT_H);
+
+      // 4b. Mask outside lane on cap for pose detection -- eliminates crowd
       if (activeRopes.upper || activeRopes.lower) {
-        const mCtx = capCtx;
-        mCtx.fillStyle = "rgba(0,0,0,0.92)";
-        // Mask above upper rope
+        capCtx.fillStyle = "#000";
         if (activeRopes.upper) {
           const uy1 = activeRopes.upper.y1 * OUT_H, uy2 = activeRopes.upper.y2 * OUT_H;
-          mCtx.beginPath();
-          mCtx.moveTo(0, 0); mCtx.lineTo(OUT_W, 0);
-          mCtx.lineTo(OUT_W, uy2); mCtx.lineTo(0, uy1);
-          mCtx.closePath(); mCtx.fill();
+          capCtx.beginPath();
+          capCtx.moveTo(0, 0); capCtx.lineTo(OUT_W, 0);
+          capCtx.lineTo(OUT_W, uy2); capCtx.lineTo(0, uy1);
+          capCtx.closePath(); capCtx.fill();
         }
-        // Mask below lower rope
         if (activeRopes.lower) {
           const ly1 = activeRopes.lower.y1 * OUT_H, ly2 = activeRopes.lower.y2 * OUT_H;
-          mCtx.beginPath();
-          mCtx.moveTo(0, ly1); mCtx.lineTo(OUT_W, ly2);
-          mCtx.lineTo(OUT_W, OUT_H); mCtx.lineTo(0, OUT_H);
-          mCtx.closePath(); mCtx.fill();
+          capCtx.beginPath();
+          capCtx.moveTo(0, ly1); capCtx.lineTo(OUT_W, ly2);
+          capCtx.lineTo(OUT_W, OUT_H); capCtx.lineTo(0, OUT_H);
+          capCtx.closePath(); capCtx.fill();
         }
       }
 
@@ -375,11 +376,50 @@ export async function extractTrackedFrames(
         }
       }
 
-      // 5. Full-frame preview canvas (for review screen)
+      // 5. Full-frame preview canvas -- drawn from CLEAN (unmasked) frame
       const preview = document.createElement("canvas");
       preview.width = OUT_W; preview.height = OUT_H;
       const pCtx = preview.getContext("2d");
-      pCtx.drawImage(cap, 0, 0, OUT_W, OUT_H);
+      pCtx.drawImage(cleanCap, 0, 0, OUT_W, OUT_H);
+
+      // Draw semi-transparent mask to show excluded regions
+      if (activeRopes.upper || activeRopes.lower) {
+        pCtx.fillStyle = "rgba(0,0,0,0.45)";
+        if (activeRopes.upper) {
+          const uy1 = activeRopes.upper.y1 * OUT_H, uy2 = activeRopes.upper.y2 * OUT_H;
+          pCtx.beginPath();
+          pCtx.moveTo(0, 0); pCtx.lineTo(OUT_W, 0);
+          pCtx.lineTo(OUT_W, uy2); pCtx.lineTo(0, uy1);
+          pCtx.closePath(); pCtx.fill();
+        }
+        if (activeRopes.lower) {
+          const ly1 = activeRopes.lower.y1 * OUT_H, ly2 = activeRopes.lower.y2 * OUT_H;
+          pCtx.beginPath();
+          pCtx.moveTo(0, ly1); pCtx.lineTo(OUT_W, ly2);
+          pCtx.lineTo(OUT_W, OUT_H); pCtx.lineTo(0, OUT_H);
+          pCtx.closePath(); pCtx.fill();
+        }
+
+        // Draw thick visible rope lines on top of everything
+        const drawRopeLine = (rope, color) => {
+          if (!rope) return;
+          // Thick glowing line
+          pCtx.shadowColor = color; pCtx.shadowBlur = 6;
+          pCtx.strokeStyle = color; pCtx.lineWidth = 3; pCtx.setLineDash([]);
+          pCtx.beginPath();
+          pCtx.moveTo(rope.x1 * OUT_W, rope.y1 * OUT_H);
+          pCtx.lineTo(rope.x2 * OUT_W, rope.y2 * OUT_H);
+          pCtx.stroke();
+          pCtx.shadowBlur = 0;
+          // Label
+          const label = color === "#FFD600" ? "Upper rope" : "Lower rope";
+          pCtx.fillStyle = color;
+          pCtx.font = "bold 10px sans-serif";
+          pCtx.fillText(label, rope.x1 * OUT_W + 4, rope.y1 * OUT_H - 5);
+        };
+        drawRopeLine(activeRopes.upper, "#FFD600");
+        drawRopeLine(activeRopes.lower, "#00E5FF");
+      }
 
       // Draw tight pose bounding box -- solid bright line shows detected person
       if (poseBb) {
@@ -431,21 +471,6 @@ export async function extractTrackedFrames(
         pCtx.textAlign = "center";
         pCtx.fillText("No person detected -- frame will not track correctly", OUT_W/2, 14);
         pCtx.textAlign = "left";
-      }
-
-      // Draw lane ropes on preview
-      if (activeRopes) {
-        const drawRopePreview = (rope, color) => {
-          if (!rope) return;
-          pCtx.strokeStyle = color; pCtx.lineWidth = 1.5;
-          pCtx.setLineDash([8, 4]);
-          pCtx.beginPath();
-          pCtx.moveTo(rope.x1 * OUT_W, rope.y1 * OUT_H);
-          pCtx.lineTo(rope.x2 * OUT_W, rope.y2 * OUT_H);
-          pCtx.stroke(); pCtx.setLineDash([]);
-        };
-        drawRopePreview(activeRopes.upper, "#FFD600");
-        drawRopePreview(activeRopes.lower, "#00E5FF");
       }
 
       // Timestamp + tracked badge on preview
@@ -548,13 +573,9 @@ export async function extractRopeKeyframes(videoFile, intervalSecs = 5.0, seedPo
   if (times[times.length-1] < duration - 1.0)
     times.push(parseFloat((duration - 0.5).toFixed(2)));
 
-  if (onStatus) onStatus(`Detecting ropes on ${times.length} keyframes...`);
+  if (onStatus) onStatus(`Extracting ${times.length} keyframes...`);
 
   const keyframes = [];
-  // Seed rope positions -- start with a reasonable guess from the seed position
-  const seedCy  = seedPos?.cy ?? 0.5;
-  let prevUpper = { x1: 0, y1: seedCy - 0.15, x2: 1, y2: seedCy - 0.15 };
-  let prevLower = { x1: 0, y1: seedCy + 0.15, x2: 1, y2: seedCy + 0.15 };
 
   for (let i = 0; i < times.length; i++) {
     const t = times[i];
@@ -570,19 +591,14 @@ export async function extractRopeKeyframes(videoFile, intervalSecs = 5.0, seedPo
     const canvas = document.createElement("canvas");
     canvas.width = OUT_W; canvas.height = OUT_H;
     canvas.getContext("2d").drawImage(video, 0, 0, OUT_W, OUT_H);
-    const ctx = canvas.getContext("2d");
-    const pixelData = ctx.getImageData(0, 0, OUT_W, OUT_H).data;
 
-    // Auto-detect rope positions using edge detection around expected position
-    const detected = autoDetectRope(pixelData, OUT_W, OUT_H, prevUpper, prevLower);
-    if (detected.upper) prevUpper = detected.upper;
-    if (detected.lower) prevLower = detected.lower;
-
+    // No auto-detection -- user must draw ropes manually on each keyframe
+    // Auto-detection is unreliable; requiring explicit user input is more accurate
     keyframes.push({
       time:  t,
       data:  canvas.toDataURL("image/jpeg", 0.82).split(",")[1],
-      upper: detected.upper || prevUpper,
-      lower: detected.lower || prevLower,
+      upper: null,  // user must draw
+      lower: null,  // user must draw
     });
   }
 
