@@ -196,9 +196,14 @@ export async function extractTrackedFrames(
       // 3. Interpolate rope positions from user keyframes
       const activeRopes = ropeKeyframes ? interpolateRopes(ropeKeyframes, t) : { upper: null, lower: null };
 
-      if (idx === 0) {
-        console.log(`[ropes] keyframes count: ${ropeKeyframes?.length ?? 0}`);
-        console.log(`[ropes] frame 0 at t=${t}: upper=${JSON.stringify(activeRopes.upper)}, lower=${JSON.stringify(activeRopes.lower)}`);
+      // Log every 10 frames so we can see what's happening without flooding console
+      if (idx % 10 === 0) {
+        console.log(`[frame ${idx} t=${t}s] ropes:`, {
+          keyframes: ropeKeyframes?.length ?? 0,
+          drawn: ropeKeyframes?.filter(k => k.upper || k.lower).length ?? 0,
+          upper: activeRopes.upper ? `y1=${activeRopes.upper.y1.toFixed(3)} y2=${activeRopes.upper.y2.toFixed(3)}` : 'null',
+          lower: activeRopes.lower ? `y1=${activeRopes.lower.y1.toFixed(3)} y2=${activeRopes.lower.y2.toFixed(3)}` : 'null',
+        });
       }
 
       // 4a. Capture CLEAN frame for preview BEFORE masking
@@ -206,23 +211,42 @@ export async function extractTrackedFrames(
       cleanCap.width = OUT_W; cleanCap.height = OUT_H;
       cleanCap.getContext("2d").drawImage(cap, 0, 0, OUT_W, OUT_H);
 
-      // 4b. Mask outside lane on cap for pose detection -- eliminates crowd
+      // 4b. Mask outside lane on cap -- pure black, fully opaque
       if (activeRopes.upper || activeRopes.lower) {
-        capCtx.fillStyle = "#000";
+        capCtx.save();
+        capCtx.globalAlpha = 1.0;
+        capCtx.globalCompositeOperation = "source-over";
+        capCtx.fillStyle = "#000000";
+
+        // Black out above upper rope
         if (activeRopes.upper) {
-          const uy1 = activeRopes.upper.y1 * OUT_H, uy2 = activeRopes.upper.y2 * OUT_H;
+          const uy1 = activeRopes.upper.y1 * OUT_H;
+          const uy2 = activeRopes.upper.y2 * OUT_H;
           capCtx.beginPath();
-          capCtx.moveTo(0, 0); capCtx.lineTo(OUT_W, 0);
-          capCtx.lineTo(OUT_W, uy2); capCtx.lineTo(0, uy1);
-          capCtx.closePath(); capCtx.fill();
+          capCtx.moveTo(0, 0);
+          capCtx.lineTo(OUT_W, 0);
+          capCtx.lineTo(OUT_W, uy2);
+          capCtx.lineTo(0, uy1);
+          capCtx.closePath();
+          capCtx.fill();
         }
+
+        // Black out below lower rope
         if (activeRopes.lower) {
-          const ly1 = activeRopes.lower.y1 * OUT_H, ly2 = activeRopes.lower.y2 * OUT_H;
+          const ly1 = activeRopes.lower.y1 * OUT_H;
+          const ly2 = activeRopes.lower.y2 * OUT_H;
           capCtx.beginPath();
-          capCtx.moveTo(0, ly1); capCtx.lineTo(OUT_W, ly2);
-          capCtx.lineTo(OUT_W, OUT_H); capCtx.lineTo(0, OUT_H);
-          capCtx.closePath(); capCtx.fill();
+          capCtx.moveTo(0, ly1);
+          capCtx.lineTo(OUT_W, ly2);
+          capCtx.lineTo(OUT_W, OUT_H);
+          capCtx.lineTo(0, OUT_H);
+          capCtx.closePath();
+          capCtx.fill();
         }
+
+        capCtx.restore();
+
+        if (idx % 10 === 0) console.log(`[mask] applied at t=${t}s`);
       }
 
       // 4. Pose detection -- constrained to lane bounds + velocity filter
