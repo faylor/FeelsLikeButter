@@ -48,7 +48,7 @@ export default function App() {
   const [step, setStep]             = useState("upload");
   const [crop, setCrop]             = useState(null);
   const [privacyZones, setPrivacyZones] = useState([]);
-  const [previewTimes, setPreviewTimes] = useState(null); // confirmed good timestamps
+  const [previewTimes, setPreviewTimes] = useState([]);
   const [result, setResult]         = useState(null);
   const [error, setError]           = useState(null);
   const [sessions, setSessions]     = useState([]);
@@ -75,8 +75,8 @@ export default function App() {
   };
 
   // -- Preview confirmed: start processing, stream frames to review ----------
-  const handlePreviewConfirm = async ({ landmarks, bb, time, laneRopes, ropeSeedTime }) => {
-    setPreviewTimes(bb ? [time] : []);
+  const handlePreviewConfirm = async ({ landmarks, bb, time, ropeKeyframes }) => {
+    setPreviewTimes(ropeKeyframes?.map(k => k.time) || []);
     setProcessedFrames([]);  // clear previous
     setProcessProgress(null);
     setError(null);
@@ -88,12 +88,12 @@ export default function App() {
         0.25, stroke,  // 4 frames/sec -- smaller motion per step, better flow tracking
         // Progress callback -- also delivers each frame as it completes
         (done, total, phase, newFrame) => {
-          setProcessProgress({ done, total, phase });
+          setProcessProgress({ done, total, phase, ropeCount: ropeKeyframes?.filter(k => k.upper || k.lower).length ?? 0 });
           if (newFrame) {
             setProcessedFrames(prev => [...prev, newFrame]);
           }
         },
-        landmarks, bb, laneRopes, ropeSeedTime
+        landmarks, bb, ropeKeyframes
       );
       setProcessProgress(null); // done
     } catch (e) {
